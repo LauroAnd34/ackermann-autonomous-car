@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ackermann Track Simulator</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="./styles.css?v=39" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="mark"></span>
+        <strong>ACKERMANN TRACK SIMULATOR</strong>
+      </div>
+      <div class="status">
+        <span id="clock">00:00.000</span>
+        <span id="hz">0 Hz</span>
+      </div>
+    </header>
+
+    <main class="shell">
+      <nav class="sideNav" aria-label="Menu do simulador">
+        <button class="navItem active" type="button" data-panel-target="sim"><span>▶</span>Sim</button>
+        <button class="navItem" type="button" data-panel-target="placas"><span>⚑</span>Placas</button>
+        <button class="navItem" type="button" data-panel-target="codigo"><span>{ }</span>Código</button>
+        <button class="navItem" type="button" data-panel-target="ambiente"><span>◐</span>Ambiente</button>
+        <button class="navItem" type="button" data-panel-target="carro"><span>⚙</span>Carro</button>
+      </nav>
+
+      <aside class="panel controls">
+        <section class="controlPanel active" data-panel="sim">
+          <h2>Pista</h2>
+          <label class="upload">
+            <input id="trackInput" type="file" accept="image/*" />
+            <span>Carregar imagem da pista</span>
+            <small>PNG / JPG, vista superior funciona melhor</small>
+          </label>
+          <div class="row">
+            <span>Imagem</span>
+            <strong id="trackName">pista oficial FIRA</strong>
+          </div>
+          <p class="hint">Escolha Indo/Voltando para largar no sentido certo. Clique no mapa para reposicionar e use A/D para ajuste fino.</p>
+          <hr class="panelDivider" />
+          <h2>Simulação</h2>
+          <label>Modo de controle
+            <select id="controllerMode">
+              <option value="rightLine" selected>Linha direita</option>
+              <option value="customCode">Código customizado</option>
+            </select>
+          </label>
+          <label>Modalidade
+            <select id="trackMode">
+              <option value="city" selected>Placas / cidade interna</option>
+              <option value="outer">Linha externa infinita</option>
+            </select>
+          </label>
+          <label>Sentido da pista
+            <select id="directionMode">
+              <option value="forward" selected>Indo</option>
+              <option value="reverse">Voltando</option>
+            </select>
+          </label>
+          <div class="buttonRow">
+            <button id="runBtn" class="primary">▶ Rodar</button>
+            <button id="pauseBtn">⏸ Pausar</button>
+            <button id="resetBtn">↻ Reset</button>
+          </div>
+          <label class="check"><input id="showCenterline" type="checkbox" checked /> Centro detectado</label>
+          <label class="check"><input id="showRays" type="checkbox" checked /> Leituras da câmera virtual</label>
+          <label class="check"><input id="showPath" type="checkbox" checked /> Caminho percorrido</label>
+          <label class="check"><input id="showSigns" type="checkbox" checked /> Placas e geradores</label>
+          <p class="hint">Modo padrão: prova das placas na cidade interna, seguindo a faixa da direita sem caminho gravado.</p>
+        </section>
+
+        <section class="controlPanel" data-panel="placas">
+          <h2>Placas</h2>
+          <label class="check"><input id="signEditMode" type="checkbox" /> Editar geradores no mapa</label>
+          <label>Placa fixa do novo ponto
+            <select id="signType">
+              <option value="random" selected>Sortear entre permitidas</option>
+              <option value="proceed_left">Vire à esquerda</option>
+              <option value="proceed_right">Vire à direita</option>
+              <option value="proceed_forward">Siga em frente</option>
+              <option value="stop">Pare</option>
+              <option value="no_entry">Não entre</option>
+              <option value="dead_end">Rua sem saída</option>
+              <option value="tunnel">Túnel</option>
+              <option value="bridge">Ponte</option>
+            </select>
+          </label>
+          <div class="signGrid">
+            <label class="check"><input class="allowedSign" type="checkbox" value="proceed_left" checked /> Esq.</label>
+            <label class="check"><input class="allowedSign" type="checkbox" value="proceed_right" checked /> Dir.</label>
+            <label class="check"><input class="allowedSign" type="checkbox" value="proceed_forward" checked /> Frente</label>
+            <label class="check"><input class="allowedSign" type="checkbox" value="stop" checked /> Stop</label>
+            <label class="check"><input class="allowedSign" type="checkbox" value="no_entry" /> Não entra</label>
+            <label class="check"><input class="allowedSign" type="checkbox" value="dead_end" /> Sem saída</label>
+          </div>
+          <div class="buttonRow">
+            <button id="randomizeSignsBtn" class="primary">Sortear</button>
+            <button id="clearSignsBtn">Limpar</button>
+          </div>
+          <p class="hint">Com edição ligada, clique no mapa para criar um gerador. Cada ponto só sorteia placas marcadas como permitidas.</p>
+          <pre id="signList"></pre>
+        </section>
+
+        <section class="controlPanel" data-panel="ambiente">
+          <h2>Ambiente</h2>
+          <label>Condição
+            <select id="environmentPreset">
+              <option value="clean" selected>Limpo</option>
+              <option value="sun">Sol forte</option>
+              <option value="indoor">Luz artificial</option>
+              <option value="dark">Pouca luz</option>
+              <option value="noisy">Câmera ruidosa</option>
+            </select>
+          </label>
+          <label>Iluminação <input id="envLight" type="range" min="0.35" max="1.45" step="0.05" value="1" /></label>
+          <output id="envLightOut">1.00</output>
+          <label>Contraste <input id="envContrast" type="range" min="0.55" max="1.7" step="0.05" value="1" /></label>
+          <output id="envContrastOut">1.00</output>
+          <label>Ruído <input id="envNoise" type="range" min="0" max="70" step="1" value="0" /></label>
+          <output id="envNoiseOut">0</output>
+          <label>Sombra <input id="envShadow" type="range" min="0" max="0.75" step="0.05" value="0" /></label>
+          <output id="envShadowOut">0.00</output>
+        </section>
+
+        <section class="controlPanel" data-panel="codigo">
+          <h2>Código do carrinho</h2>
+          <textarea id="codeEditor" spellcheck="false"></textarea>
+          <div class="buttonRow">
+            <button id="applyCodeBtn" class="primary">Aplicar</button>
+            <button id="restoreCodeBtn">Padrão</button>
+          </div>
+          <p id="codeStatus" class="hint">Cole um controlador JS ou o arquivo Python/RPi completo; Aplicar adapta o perfil para o simulador.</p>
+        </section>
+
+        <section class="controlPanel" data-panel="carro">
+          <h2>Carro</h2>
+          <label>Entre-eixos L <input id="wheelbase" type="range" min="0.18" max="0.55" step="0.01" value="0.33" /></label>
+          <output id="wheelbaseOut">0.33 m</output>
+          <label>Ângulo máx. <input id="maxSteer" type="range" min="15" max="45" step="1" value="35" /></label>
+          <output id="maxSteerOut">35°</output>
+          <label>Velocidade <input id="speed" type="range" min="0.25" max="3.0" step="0.05" value="1.25" /></label>
+          <output id="speedOut">1.25 m/s</output>
+          <hr class="panelDivider" />
+          <h2>Controle PID</h2>
+          <label>Kp <input id="kp" type="range" min="0" max="4" step="0.05" value="2.2" /></label>
+          <output id="kpOut">2.20</output>
+          <label>Ki <input id="ki" type="range" min="0" max="1" step="0.01" value="0.00" /></label>
+          <output id="kiOut">0.00</output>
+          <label>Kd <input id="kd" type="range" min="0" max="1" step="0.01" value="0.18" /></label>
+          <output id="kdOut">0.18</output>
+          <hr class="panelDivider" />
+          <h2>Servo</h2>
+          <label>PWM min <input id="pwmMin" type="number" value="1000" min="500" max="1500" /></label>
+          <label>PWM centro <input id="pwmCenter" type="number" value="1500" min="1000" max="2000" /></label>
+          <label>PWM máx <input id="pwmMax" type="number" value="2000" min="1500" max="2500" /></label>
+        </section>
+      </aside>
+
+      <section class="trackArea">
+        <div class="canvasTitle">
+          <h1>Visão da Pista</h1>
+          <span>modelo bicicleta Ackermann + câmera virtual por marcações visíveis</span>
+        </div>
+        <div class="canvasWrap">
+          <canvas id="simCanvas" width="900" height="1125"></canvas>
+        </div>
+        <div class="quickStats" aria-label="Resumo da simulação">
+          <div><span>Velocidade</span><strong id="speedMetricMirror">0.00 m/s</strong></div>
+          <div><span>Direção</span><strong id="steerMetricMirror">0.0°</strong></div>
+          <div><span>Erro lateral</span><strong id="errorMetricMirror">0.000 m</strong></div>
+          <div><span>Rumo</span><strong id="headingMetricMirror">0.0°</strong></div>
+        </div>
+      </section>
+
+      <aside class="panel telemetry">
+        <details class="widget" open>
+          <summary><h2>Câmera</h2><span>visão virtual</span></summary>
+          <canvas id="cameraCanvas" width="320" height="180"></canvas>
+        </details>
+        <details class="widget" open>
+          <summary><h2>Processamento</h2><span>linhas e bloqueios</span></summary>
+          <canvas id="processedCanvas" width="320" height="180"></canvas>
+          <pre id="visionReadout"></pre>
+        </details>
+        <details class="widget" open>
+          <summary><h2>Placa Vista</h2><span>decisão</span></summary>
+          <pre id="signReadout"></pre>
+        </details>
+        <details class="widget" open>
+          <summary><h2>Telemetria</h2><span>tempo real</span></summary>
+          <div class="metric"><span>Ângulo direção</span><strong id="steerMetric">0.0°</strong></div>
+          <div class="metric"><span>Servo PWM</span><strong id="pwmMetric">1500 µs</strong></div>
+          <div class="metric"><span>Velocidade</span><strong id="speedMetric">0.00 m/s</strong></div>
+          <div class="metric"><span>Erro lateral</span><strong id="errorMetric">0.000 m</strong></div>
+          <div class="metric"><span>Erro angular</span><strong id="headingMetric">0.0°</strong></div>
+          <div class="metric"><span>FPS</span><strong id="fpsMetric">0</strong></div>
+        </details>
+        <details class="widget">
+          <summary><h2>Log</h2><span>eventos</span></summary>
+          <pre id="log"></pre>
+        </details>
+      </aside>
+    </main>
+
+    <script src="./app.js?v=39"></script>
+  </body>
+</html>
