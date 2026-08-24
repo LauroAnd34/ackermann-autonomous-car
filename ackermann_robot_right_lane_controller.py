@@ -18,12 +18,6 @@ except Exception:
     Servo = None
 
 
-# Arquitetura do codigo:
-# - Adaptadores de hardware: GPIO, servo, motores e camera USB.
-# - Pipeline de visao: recorta a ROI, binariza as linhas brancas e mede a faixa.
-# - Estrategia de controle: transforma a leitura da faixa em direcao Ackermann e velocidade.
-# Essa separacao deixa mais facil trocar o controle no futuro sem mexer na camera ou nos pinos.
-
 # ==========================
 # CONFIGURACOES DO SERVO
 # ==========================
@@ -83,74 +77,39 @@ KP_OFFSET = 1.0 / 76.0
 KP_SLOPE = 1.05
 
 
-def limitar(value, low, high):
+def clamp(value, low, high):
     return max(low, min(high, value))
 
 
-def formatar_valor(value):
+def fmt(value):
     return "None" if value is None else f"{value:.1f}"
 
 
-class EstrategiaControleFaixaDireita:
-    """Padrao Strategy: encapsula a decisao de manter o carro na faixa direita."""
-
-    def calcular(self, faixa, ultimo_comando_direcao, direcao_busca):
-        linha_direita = faixa["right_offset"]
-        linha_esquerda = faixa["left_offset"]
-        alvo = faixa["target"]
-        inclinacao = faixa["slope"]
-
-        if linha_direita is None:
-            comando_direcao = ultimo_comando_direcao * 0.92 or direcao_busca
-            velocidade = VEL_BUSCA
-        else:
-            comando_direcao = (linha_direita - alvo) * KP_OFFSET + inclinacao * KP_SLOPE
-
-            # Se a linha continua esquerda apareceu perto demais, empurra para a direita.
-            if linha_esquerda is not None and linha_esquerda > -50 and linha_direita > 44:
-                comando_direcao += 0.34
-
-            # Quando a tracejada some, a leitura pode estar perto da contramao; reforca a direita.
-            if faixa["dash_offset"] is None and linha_direita > 78:
-                comando_direcao += 0.16
-            if faixa["dash_offset"] is None and linha_direita > 98:
-                comando_direcao += 0.26
-
-            # Linha direita perto demais: corrige suavemente para nao sair pela borda.
-            if linha_direita < 36:
-                comando_direcao -= 0.22
-
-            velocidade = VEL_CURVA if abs(comando_direcao) > 0.38 or faixa["confidence"] < 0.55 else VEL_BASE
-
-        return limitar(comando_direcao, -1.0, 1.0), int(limitar(velocidade, 0, VEL_MAX))
-
-
-class CarroAutonomoAckermann:
+class AutonomousCar:
     def __init__(self, args):
         self.args = args
-        self.simulacao_sem_hardware = args.simulacao_sem_hardware
-        self.mostrar_janelas = not args.sem_janelas
-        self.rodando = True
+        self.dry_run = args.dry_run
+        self.display = not args.no_display
+        self.running = True
 
-        self.camera = None
-        self.servo = None
-        self.pwm_motor_esq = None
-        self.pwm_motor_dir = None
+        self.cap = None
+        self.my_servo = None
+        self.pwm_esq = None
+        self.pwm_dir = None
 
-        self.historico_servo = deque(maxlen=SERVO_HISTORY)
+        self.servo_history = deque(maxlen=SERVO_HISTORY)
         self.servo_atual = SERVO_CENTRO
-        self.ultimo_comando_direcao = 0.0
-        self.ultimo_deslocamento_direita = RIGHT_TARGET_PX
-        self.contador_frames = 0
-        self.ultimo_log = 0
-        self.estrategia_controle = EstrategiaControleFaixaDireita()
+        self.last_steer_cmd = 0.0
+        self.last_right_offset = RIGHT_TARGET_PX
+        self.frame_count = 0
+        self.last_log = 0
 
-        self.configurar_gpio()
-        self.configurar_servo()
-        self.configurar_camera()
+        self.setup_gpio()
+        self.setup_servo()
+        self.setup_camera()
 
-    def configurar_gpio(self):
-        if self.simulacao_sem_hardware:
+    def setup_gpio(self):
+        if self.dry_run:
             print("DRY-RUN: GPIO desativado")
             return
         if GPIO is None:
@@ -160,14 +119,14 @@ class CarroAutonomoAckermann:
         GPIO.cleanup()
         GPIO.setmode(GPIO.BCM)
 
-        for pin in self.pinos_motor():
+        for pin in self.motor_pins():
             GPIO.setup(pin, GPIO.OUT)
 
-        self.pwm_motor_esq = GPIO.PWM(self.args.pin_left_pwm, PWM_FREQ)
-        self.pwm_motor_dir = GPIO.PWM(self.args.pin_right_pwm, PWM_FREQ)
-        self.pwm_motor_esq.start(0)
-        self.pwm_motor_dir.start(0)
-        self.definir_direcao_motores(forward=True)
+        self.pwm_esq = GPIO.PWM(self.args.pin_left_pwm, PWM_FREQ)
+        self.pwm_dir = GPIO.PWM(self.args.pin_right_pwm, PWM_FREQ)
+        self.pwm_esq.start(0)
+        self.pwm_dir.start(0)
+        self.set_motor_direction(forward=True)
         print("GPIO configurado com sucesso em modo BCM")
         print(
             "Pinagem: "
@@ -176,7 +135,7 @@ class CarroAutonomoAckermann:
             f"motor_dir IN3/IN4/PWM={self.args.pin_right_in1}/{self.args.pin_right_in2}/{self.args.pin_right_pwm}"
         )
 
-    def pinos_motor(self):
+    def motor_pins(self):
         return [
             self.args.pin_left_in1,
             self.args.pin_left_in2,
@@ -186,49 +145,49 @@ class CarroAutonomoAckermann:
             self.args.pin_right_pwm,
         ]
 
-    def configurar_servo(self):
-        if self.simulacao_sem_hardware:
+    def setup_servo(self):
+        if self.dry_run:
             print("DRY-RUN: servo desativado")
             return
         if Servo is None:
             raise RuntimeError("gpiozero.Servo nao esta disponivel. Instale gpiozero ou use --dry-run.")
 
-        self.servo = Servo(
+        self.my_servo = Servo(
             self.args.pin_servo,
             min_pulse_width=self.args.servo_min_pulse,
             max_pulse_width=self.args.servo_max_pulse,
         )
-        self.servo.value = SERVO_CENTRO
+        self.my_servo.value = SERVO_CENTRO
         self.servo_atual = SERVO_CENTRO
         print(f"Servo configurado no pino BCM {self.args.pin_servo}; centro={SERVO_CENTRO}")
 
-    def configurar_camera(self):
+    def setup_camera(self):
         if cv2 is None:
             raise RuntimeError(
                 "OpenCV/numpy nao estao disponiveis. Instale com: "
                 "sudo apt install python3-opencv python3-numpy"
             )
         backend = cv2.CAP_V4L2 if sys.platform.startswith("linux") else 0
-        self.camera = cv2.VideoCapture(self.args.camera, backend)
-        self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.args.width)
-        self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.args.height)
-        self.camera.set(cv2.CAP_PROP_FPS, self.args.fps)
-        self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        self.cap = cv2.VideoCapture(self.args.camera, backend)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.args.width)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.args.height)
+        self.cap.set(cv2.CAP_PROP_FPS, self.args.fps)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-        if not self.camera.isOpened():
+        if not self.cap.isOpened():
             raise RuntimeError(
                 f"Nao consegui abrir a camera USB index={self.args.camera}. "
                 "Teste com: ls /dev/video*"
             )
 
-        ok, quadro = self.camera.read()
-        if not ok or quadro is None:
-            raise RuntimeError("Camera abriu, mas nao entregou quadro.")
+        ok, frame = self.cap.read()
+        if not ok or frame is None:
+            raise RuntimeError("Camera abriu, mas nao entregou frame.")
 
-        print(f"Camera USB conectada: index={self.args.camera}, quadro={quadro.shape[1]}x{quadro.shape[0]}")
+        print(f"Camera USB conectada: index={self.args.camera}, frame={frame.shape[1]}x{frame.shape[0]}")
 
-    def definir_direcao_motores(self, forward=True):
-        if self.simulacao_sem_hardware:
+    def set_motor_direction(self, forward=True):
+        if self.dry_run:
             return
         a, b = MOTOR_FORWARD if forward else MOTOR_BACKWARD
         GPIO.output(self.args.pin_left_in1, a)
@@ -236,70 +195,69 @@ class CarroAutonomoAckermann:
         GPIO.output(self.args.pin_right_in1, a)
         GPIO.output(self.args.pin_right_in2, b)
 
-    def definir_velocidades_motores(self, vel_esq, vel_dir):
-        vel_esq = int(limitar(vel_esq, VEL_MIN, VEL_MAX))
-        vel_dir = int(limitar(vel_dir, VEL_MIN, VEL_MAX))
-        if self.simulacao_sem_hardware:
+    def set_motor_speeds(self, vel_esq, vel_dir):
+        vel_esq = int(clamp(vel_esq, VEL_MIN, VEL_MAX))
+        vel_dir = int(clamp(vel_dir, VEL_MIN, VEL_MAX))
+        if self.dry_run:
             return
-        self.pwm_motor_esq.ChangeDutyCycle(vel_esq)
-        self.pwm_motor_dir.ChangeDutyCycle(vel_dir)
+        self.pwm_esq.ChangeDutyCycle(vel_esq)
+        self.pwm_dir.ChangeDutyCycle(vel_dir)
 
-    def parar_motores(self):
-        self.definir_velocidades_motores(0, 0)
+    def stop_motors(self):
+        self.set_motor_speeds(0, 0)
 
-    def direcao_para_valor_servo(self, comando_direcao):
-        comando_direcao = limitar(comando_direcao, -1.0, 1.0)
-        if comando_direcao >= 0:
-            return SERVO_CENTRO + comando_direcao * (SERVO_MAX_REAL - SERVO_CENTRO)
-        return SERVO_CENTRO + abs(comando_direcao) * (SERVO_MIN_REAL - SERVO_CENTRO)
+    def steer_to_servo_value(self, steer_cmd):
+        steer_cmd = clamp(steer_cmd, -1.0, 1.0)
+        if steer_cmd >= 0:
+            return SERVO_CENTRO + steer_cmd * (SERVO_MAX_REAL - SERVO_CENTRO)
+        return SERVO_CENTRO + abs(steer_cmd) * (SERVO_MIN_REAL - SERVO_CENTRO)
 
-    def aplicar_servo(self, comando_direcao):
-        target = self.direcao_para_valor_servo(comando_direcao)
-        self.historico_servo.append(target)
-        average = sum(self.historico_servo) / len(self.historico_servo)
+    def set_servo(self, steer_cmd):
+        target = self.steer_to_servo_value(steer_cmd)
+        self.servo_history.append(target)
+        average = sum(self.servo_history) / len(self.servo_history)
         self.servo_atual = self.servo_atual * (1 - SERVO_SMOOTHING) + average * SERVO_SMOOTHING
-        self.servo_atual = limitar(self.servo_atual, SERVO_MIN_REAL, SERVO_MAX_REAL)
+        self.servo_atual = clamp(self.servo_atual, SERVO_MIN_REAL, SERVO_MAX_REAL)
 
-        if not self.simulacao_sem_hardware and self.servo is not None:
-            self.servo.value = self.servo_atual
+        if not self.dry_run and self.my_servo is not None:
+            self.my_servo.value = self.servo_atual
         return self.servo_atual
 
-    def pre_processar_imagem(self, quadro):
-        # A ROI inferior reduz distrações: placas, parede e horizonte nao entram no controle da faixa.
-        roi_y = int(quadro.shape[0] * ROI_TOP)
-        roi = quadro[roi_y:, :]
+    def preprocess(self, frame):
+        roi_y = int(frame.shape[0] * ROI_TOP)
+        roi = frame[roi_y:, :]
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
-        _, mascara = cv2.threshold(blur, self.args.white_threshold, 255, cv2.THRESH_BINARY)
+        _, mask = cv2.threshold(blur, self.args.white_threshold, 255, cv2.THRESH_BINARY)
         kernel = np.ones((3, 3), np.uint8)
-        mascara = cv2.morphologyEx(mascara, cv2.MORPH_OPEN, kernel)
-        mascara = cv2.morphologyEx(mascara, cv2.MORPH_CLOSE, kernel)
-        return mascara, roi_y
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        return mask, roi_y
 
-    def varrer_grupos(self, mascara, y):
+    def scan_groups(self, mask, y):
         groups = []
         current = None
-        center_x = mascara.shape[1] // 2
+        center_x = mask.shape[1] // 2
 
-        for x in range(0, mascara.shape[1], 2):
+        for x in range(0, mask.shape[1], 2):
             offset = x - center_x
-            white = mascara[y, x] > 0
+            white = mask[y, x] > 0
             if white:
                 if current is None:
                     current = {"start": offset, "end": offset, "count": 0}
                 current["end"] = offset
                 current["count"] += 1
             elif current is not None:
-                groups.append(self.para_grupo(current))
+                groups.append(self.to_group(current))
                 current = None
 
         if current is not None:
-            groups.append(self.para_grupo(current))
+            groups.append(self.to_group(current))
 
         return [g for g in groups if 2 <= g["width"] <= 38]
 
     @staticmethod
-    def para_grupo(raw):
+    def to_group(raw):
         return {
             "start": raw["start"],
             "end": raw["end"],
@@ -309,14 +267,14 @@ class CarroAutonomoAckermann:
         }
 
     @staticmethod
-    def deslocamento_ponderado(items):
+    def weighted_offset(items):
         if not items:
             return None
         total = sum(item["weight"] for item in items)
         return sum(item["offset"] * item["weight"] for item in items) / total
 
     @staticmethod
-    def inclinacao_linha(items):
+    def line_slope(items):
         if len(items) < 2:
             return 0.0
         ordered = sorted(items, key=lambda item: item["dist"])
@@ -325,28 +283,28 @@ class CarroAutonomoAckermann:
         near_offset = sum(item["offset"] for item in near) / len(near)
         far_offset = sum(item["offset"] for item in far) / len(far)
         span = max(1.0, far[-1]["dist"] - near[0]["dist"])
-        return limitar((far_offset - near_offset) / span, -1.0, 1.0)
+        return clamp((far_offset - near_offset) / span, -1.0, 1.0)
 
     @staticmethod
-    def alvo_faixa(right_offset, dash_offset):
+    def lane_target(right_offset, dash_offset):
         if right_offset is None or dash_offset is None:
             return None
         lane_width = right_offset - dash_offset
         if lane_width < 34 or lane_width > 120:
             return None
-        return limitar(lane_width * 0.42, 30, 50)
+        return clamp(lane_width * 0.42, 30, 50)
 
-    def detectar_faixa(self, quadro):
-        mascara, roi_y = self.pre_processar_imagem(quadro)
-        rows = [int(mascara.shape[0] * p) for p in [0.86, 0.78, 0.69, 0.60, 0.50, 0.40, 0.31, 0.23]]
+    def detect_lane(self, frame):
+        mask, roi_y = self.preprocess(frame)
+        rows = [int(mask.shape[0] * p) for p in [0.86, 0.78, 0.69, 0.60, 0.50, 0.40, 0.31, 0.23]]
         usable_right = []
         usable_left = []
         usable_dash = []
-        expected_right = limitar(self.ultimo_deslocamento_direita, 28, 112)
+        expected_right = clamp(self.last_right_offset, 28, 112)
 
         for i, y in enumerate(rows):
             dist = 18 + i * 22
-            groups = self.varrer_grupos(mascara, y)
+            groups = self.scan_groups(mask, y)
             if len(groups) >= 7:
                 continue
 
@@ -362,7 +320,7 @@ class CarroAutonomoAckermann:
                 usable_right.append({
                     "offset": best["center"],
                     "dist": dist,
-                    "weight": limitar(2.2 - dist / 125.0, 0.45, 2.0),
+                    "weight": clamp(2.2 - dist / 125.0, 0.45, 2.0),
                     "row": y,
                 })
 
@@ -371,7 +329,7 @@ class CarroAutonomoAckermann:
                 usable_left.append({
                     "offset": best["center"],
                     "dist": dist,
-                    "weight": limitar(1.6 - dist / 175.0, 0.45, 1.45),
+                    "weight": clamp(1.6 - dist / 175.0, 0.45, 1.45),
                     "row": y,
                 })
 
@@ -379,18 +337,18 @@ class CarroAutonomoAckermann:
                 best = sorted(dash_candidates, key=lambda g: abs(g["center"]))[0]
                 usable_dash.append({"offset": best["center"], "dist": dist, "weight": 1.0, "row": y})
 
-        right_offset = self.deslocamento_ponderado(usable_right)
-        left_offset = self.deslocamento_ponderado(usable_left)
-        dash_offset = self.deslocamento_ponderado(usable_dash)
-        slope = self.inclinacao_linha(usable_right)
-        target = self.alvo_faixa(right_offset, dash_offset) or RIGHT_TARGET_PX
-        confidence = limitar(len(usable_right) * 0.18, 0.0, 1.0)
+        right_offset = self.weighted_offset(usable_right)
+        left_offset = self.weighted_offset(usable_left)
+        dash_offset = self.weighted_offset(usable_dash)
+        slope = self.line_slope(usable_right)
+        target = self.lane_target(right_offset, dash_offset) or RIGHT_TARGET_PX
+        confidence = clamp(len(usable_right) * 0.18, 0.0, 1.0)
 
         if right_offset is not None:
-            self.ultimo_deslocamento_direita = right_offset
+            self.last_right_offset = right_offset
 
         return {
-            "mascara": mascara,
+            "mask": mask,
             "roi_y": roi_y,
             "right_offset": right_offset,
             "left_offset": left_offset,
@@ -403,97 +361,114 @@ class CarroAutonomoAckermann:
             "dash_points": usable_dash,
         }
 
-    def controlador(self, faixa):
-        comando_direcao, velocidade = self.estrategia_controle.calcular(
-            faixa,
-            self.ultimo_comando_direcao,
-            self.args.search_steer,
-        )
-        self.ultimo_comando_direcao = comando_direcao
-        return comando_direcao, velocidade
+    def controller(self, lane):
+        right = lane["right_offset"]
+        left = lane["left_offset"]
+        target = lane["target"]
+        slope = lane["slope"]
 
-    def calcular_velocidades_motores(self, speed, comando_direcao):
-        turn = abs(comando_direcao)
+        if right is None:
+            steer = self.last_steer_cmd * 0.92 or self.args.search_steer
+            speed = VEL_BUSCA
+        else:
+            steer = (right - target) * KP_OFFSET + slope * KP_SLOPE
+            if left is not None and left > -50 and right > 44:
+                steer += 0.34
+            if lane["dash_offset"] is None and right > 78:
+                steer += 0.16
+            if lane["dash_offset"] is None and right > 98:
+                steer += 0.26
+            if right < 36:
+                steer -= 0.22
+            speed = VEL_CURVA if abs(steer) > 0.38 or lane["confidence"] < 0.55 else VEL_BASE
+
+        steer = clamp(steer, -1.0, 1.0)
+        speed = int(clamp(speed, 0, VEL_MAX))
+        self.last_steer_cmd = steer
+        return steer, speed
+
+    def calculate_motor_speeds(self, speed, steer_cmd):
+        turn = abs(steer_cmd)
         inner_factor = 1.0 - min(0.18, turn * 0.12)
-        if comando_direcao < -0.05:
+        if steer_cmd < -0.05:
             return int(speed * inner_factor), speed
-        if comando_direcao > 0.05:
+        if steer_cmd > 0.05:
             return speed, int(speed * inner_factor)
         return speed, speed
 
-    def desenhar_debug(self, quadro, faixa, comando_direcao, valor_servo, velocidades, fps):
-        roi_y = faixa["roi_y"]
-        height, width = quadro.shape[:2]
+    def draw_debug(self, frame, lane, steer_cmd, servo_value, speeds, fps):
+        roi_y = lane["roi_y"]
+        height, width = frame.shape[:2]
         center_x = width // 2
 
-        cv2.rectangle(quadro, (0, roi_y), (width - 1, height - 1), (0, 180, 0), 1)
-        cv2.line(quadro, (center_x, roi_y), (center_x, height), (255, 160, 0), 1)
+        cv2.rectangle(frame, (0, roi_y), (width - 1, height - 1), (0, 180, 0), 1)
+        cv2.line(frame, (center_x, roi_y), (center_x, height), (255, 160, 0), 1)
 
-        for item in faixa["right_points"]:
+        for item in lane["right_points"]:
             x = int(center_x + item["offset"])
             y = int(roi_y + item["row"])
-            cv2.circle(quadro, (x, y), 4, (255, 255, 0), -1)
+            cv2.circle(frame, (x, y), 4, (255, 255, 0), -1)
 
-        for item in faixa["left_points"]:
+        for item in lane["left_points"]:
             x = int(center_x + item["offset"])
             y = int(roi_y + item["row"])
-            cv2.circle(quadro, (x, y), 4, (0, 0, 255), -1)
+            cv2.circle(frame, (x, y), 4, (0, 0, 255), -1)
 
-        target_x = int(center_x + faixa["target"])
-        cv2.line(quadro, (target_x, roi_y), (target_x, height), (0, 255, 255), 1)
+        target_x = int(center_x + lane["target"])
+        cv2.line(frame, (target_x, roi_y), (target_x, height), (0, 255, 255), 1)
 
         lines = [
-            f"right={formatar_valor(faixa['right_offset'])} left={formatar_valor(faixa['left_offset'])} dash={formatar_valor(faixa['dash_offset'])}",
-            f"target={faixa['target']:.1f} slope={faixa['slope']:.2f} conf={faixa['confidence']:.2f}",
-            f"steer={comando_direcao:.2f} servo={valor_servo:.2f}",
-            f"motor L/R={velocidades[0]}/{velocidades[1]} fps={fps:.1f}",
+            f"right={fmt(lane['right_offset'])} left={fmt(lane['left_offset'])} dash={fmt(lane['dash_offset'])}",
+            f"target={lane['target']:.1f} slope={lane['slope']:.2f} conf={lane['confidence']:.2f}",
+            f"steer={steer_cmd:.2f} servo={servo_value:.2f}",
+            f"motor L/R={speeds[0]}/{speeds[1]} fps={fps:.1f}",
         ]
         for i, text in enumerate(lines):
-            cv2.putText(quadro, text, (8, 22 + i * 21), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 2)
-            cv2.putText(quadro, text, (8, 22 + i * 21), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 0, 0), 1)
-        return quadro
+            cv2.putText(frame, text, (8, 22 + i * 21), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 2)
+            cv2.putText(frame, text, (8, 22 + i * 21), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 0, 0), 1)
+        return frame
 
-    def registrar_status(self, faixa, comando_direcao, valor_servo, velocidades, fps):
+    def log_status(self, lane, steer_cmd, servo_value, speeds, fps):
         now = time.time()
-        if now - self.ultimo_log < self.args.log_interval:
+        if now - self.last_log < self.args.log_interval:
             return
-        self.ultimo_log = now
+        self.last_log = now
         print(
-            f"quadro={self.contador_frames} "
-            f"right={formatar_valor(faixa['right_offset'])} left={formatar_valor(faixa['left_offset'])} "
-            f"target={faixa['target']:.1f} steer={comando_direcao:.2f} servo={valor_servo:.2f} "
-            f"motor={velocidades[0]}/{velocidades[1]} conf={faixa['confidence']:.2f} fps={fps:.1f}"
+            f"frame={self.frame_count} "
+            f"right={fmt(lane['right_offset'])} left={fmt(lane['left_offset'])} "
+            f"target={lane['target']:.1f} steer={steer_cmd:.2f} servo={servo_value:.2f} "
+            f"motor={speeds[0]}/{speeds[1]} conf={lane['confidence']:.2f} fps={fps:.1f}"
         )
 
-    def executar(self):
+    def run(self):
         print("\n--- INICIANDO NAVEGACAO AUTONOMA ---")
         print("Use Ctrl+C para parar. Com janela aberta, pressione q ou ESC.")
-        self.definir_direcao_motores(forward=True)
+        self.set_motor_direction(forward=True)
 
         try:
-            while self.rodando:
+            while self.running:
                 start = time.time()
-                ok, quadro = self.camera.read()
-                if not ok or quadro is None:
-                    print("ERRO: falha ao capturar quadro")
-                    self.parar_motores()
+                ok, frame = self.cap.read()
+                if not ok or frame is None:
+                    print("ERRO: falha ao capturar frame")
+                    self.stop_motors()
                     time.sleep(0.05)
                     continue
 
-                self.contador_frames += 1
-                faixa = self.detectar_faixa(quadro)
-                comando_direcao, speed = self.controlador(faixa)
-                valor_servo = self.aplicar_servo(comando_direcao)
-                velocidades = self.calcular_velocidades_motores(speed, comando_direcao)
-                self.definir_velocidades_motores(*velocidades)
+                self.frame_count += 1
+                lane = self.detect_lane(frame)
+                steer_cmd, speed = self.controller(lane)
+                servo_value = self.set_servo(steer_cmd)
+                speeds = self.calculate_motor_speeds(speed, steer_cmd)
+                self.set_motor_speeds(*speeds)
 
                 fps = 1.0 / max(time.time() - start, 0.001)
-                self.registrar_status(faixa, comando_direcao, valor_servo, velocidades, fps)
+                self.log_status(lane, steer_cmd, servo_value, speeds, fps)
 
-                if self.mostrar_janelas:
-                    debug = self.desenhar_debug(quadro.copy(), faixa, comando_direcao, valor_servo, velocidades, fps)
+                if self.display:
+                    debug = self.draw_debug(frame.copy(), lane, steer_cmd, servo_value, speeds, fps)
                     cv2.imshow("camera", debug)
-                    cv2.imshow("mascara", faixa["mascara"])
+                    cv2.imshow("mask", lane["mask"])
                     key = cv2.waitKey(1) & 0xFF
                     if key in (27, ord("q")):
                         print("Parada solicitada pela tecla")
@@ -505,32 +480,32 @@ class CarroAutonomoAckermann:
         except KeyboardInterrupt:
             print("\nInterrompido pelo usuario")
         finally:
-            self.limpar_recursos()
+            self.cleanup()
 
-    def limpar_recursos(self):
+    def cleanup(self):
         print("\n--- FINALIZANDO COM SEGURANCA ---")
-        self.rodando = False
+        self.running = False
         try:
-            self.parar_motores()
+            self.stop_motors()
             time.sleep(0.15)
-            if self.servo is not None:
-                self.servo.value = SERVO_CENTRO
+            if self.my_servo is not None:
+                self.my_servo.value = SERVO_CENTRO
                 time.sleep(0.25)
-            if self.pwm_motor_esq is not None:
-                self.pwm_motor_esq.stop()
-            if self.pwm_motor_dir is not None:
-                self.pwm_motor_dir.stop()
-            if GPIO is not None and not self.simulacao_sem_hardware:
+            if self.pwm_esq is not None:
+                self.pwm_esq.stop()
+            if self.pwm_dir is not None:
+                self.pwm_dir.stop()
+            if GPIO is not None and not self.dry_run:
                 GPIO.cleanup()
-            if self.camera is not None:
-                self.camera.release()
-            if self.mostrar_janelas:
+            if self.cap is not None:
+                self.cap.release()
+            if self.display:
                 cv2.destroyAllWindows()
         finally:
             print("Sistema finalizado")
 
 
-def ler_argumentos():
+def parse_args():
     parser = argparse.ArgumentParser(description="Carro autonomo Ackermann para Raspberry Pi + camera USB")
     parser.add_argument("--camera", type=int, default=CAMERA_INDEX, help="Indice da camera USB, normalmente 0")
     parser.add_argument("--width", type=int, default=CAMERA_WIDTH)
@@ -549,23 +524,23 @@ def ler_argumentos():
     parser.add_argument("--pin-right-pwm", type=int, default=DEFAULT_PIN_MAP["motor_right_pwm"], help="Pino BCM PWM/ENB motor direito")
     parser.add_argument("--loop-delay", type=float, default=0.0)
     parser.add_argument("--log-interval", type=float, default=0.5)
-    parser.add_argument("--dry-run", dest="simulacao_sem_hardware", action="store_true", help="Nao aciona GPIO/servo; usa somente camera e debug")
-    parser.add_argument("--no-display", dest="sem_janelas", action="store_true", help="Roda sem janelas OpenCV, bom para SSH")
+    parser.add_argument("--dry-run", action="store_true", help="Nao aciona GPIO/servo; usa somente camera e debug")
+    parser.add_argument("--no-display", action="store_true", help="Roda sem janelas OpenCV, bom para SSH")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
-    args = ler_argumentos()
+    args = parse_args()
     print("--- SISTEMA AUTONOMO ACKERMANN + CAMERA USB INICIADO ---")
     car = None
     try:
-        car = CarroAutonomoAckermann(args)
+        car = AutonomousCar(args)
         time.sleep(1.0)
-        car.executar()
+        car.run()
     except Exception as error:
         print(f"ERRO FATAL: {error}")
         if car is not None:
-            car.limpar_recursos()
-        elif GPIO is not None and not args.simulacao_sem_hardware:
+            car.cleanup()
+        elif GPIO is not None and not args.dry_run:
             GPIO.cleanup()
         sys.exit(1)

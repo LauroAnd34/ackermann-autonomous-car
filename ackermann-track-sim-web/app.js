@@ -1,19 +1,11 @@
-const telaSimulacao = document.getElementById("simCanvas");
-const ctxSimulacao = telaSimulacao.getContext("2d");
-const telaCamera = document.getElementById("cameraCanvas");
-const ctxCamera = telaCamera.getContext("2d");
-const telaProcessamento = document.getElementById("processedCanvas");
-const ctxProcessamento = telaProcessamento.getContext("2d");
+const canvas = document.getElementById("simCanvas");
+const ctx = canvas.getContext("2d");
+const cameraCanvas = document.getElementById("cameraCanvas");
+const cameraCtx = cameraCanvas.getContext("2d");
+const processedCanvas = document.getElementById("processedCanvas");
+const processedCtx = processedCanvas.getContext("2d");
 
-// Padrao usado no simulador:
-// - Modelo: o objeto `estado` guarda carro, placas, telemetria e leituras.
-// - Visao: funcoes `renderizar*` desenham pista, camera, processamento e paineis.
-// - Controle/Strategy: `controladorLinhaDireitaEmbutido` ou o codigo colado no editor
-//   recebem a mesma entrada de sensores e devolvem direcao/velocidade.
-// Os nomes do contrato do editor (`input.rightLineOffsetPx`, `api.clamp`, etc.) ficam em
-// ingles para manter compatibilidade com os codigos ja testados no simulador.
-
-const idsInterface = [
+const ids = [
   "trackInput", "trackName", "runBtn", "pauseBtn", "resetBtn", "showCenterline",
   "showRays", "showPath", "showSigns", "signEditMode", "signType", "randomizeSignsBtn",
   "clearSignsBtn", "signList", "signReadout", "environmentPreset", "envLight", "envContrast",
@@ -24,24 +16,24 @@ const idsInterface = [
   "controllerMode", "directionMode", "codeEditor", "applyCodeBtn", "restoreCodeBtn", "codeStatus", "visionReadout",
   "errorMetric", "headingMetric", "fpsMetric", "clock", "hz", "log"
 ];
-const interfaceUsuario = Object.fromEntries(idsInterface.map((id) => [id, document.getElementById(id)]));
+const ui = Object.fromEntries(ids.map((id) => [id, document.getElementById(id)]));
 
-const telaPista = document.createElement("canvas");
-telaPista.width = telaSimulacao.width;
-telaPista.height = telaSimulacao.height;
-const ctxPista = telaPista.getContext("2d");
+const trackCanvas = document.createElement("canvas");
+trackCanvas.width = canvas.width;
+trackCanvas.height = canvas.height;
+const trackCtx = trackCanvas.getContext("2d");
 
-let pixelsPista = null;
-let controladorPersonalizado = null;
-let ultimaImagemCamera = null;
-let limiarBranco = 185;
-const POSES_INICIAIS = {
+let trackPixels = null;
+let customController = null;
+let lastCameraImage = null;
+let whiteThreshold = 185;
+const START_POSES = {
   outer_forward: { x: 92, y: 900, heading: -Math.PI / 2 },
   outer_reverse: { x: 827, y: 300, heading: Math.PI / 2 },
   city_forward: { x: 456, y: 1040, heading: -Math.PI / 2 },
   city_reverse: { x: 414, y: 270, heading: Math.PI / 2 }
 };
-const TIPOS_PLACA = {
+const SIGN_TYPES = {
   proceed_left: { label: "Vire à esquerda", short: "L", color: "#168fd3", decision: "converter para a rua à esquerda" },
   proceed_right: { label: "Vire à direita", short: "R", color: "#168fd3", decision: "converter para a rua à direita" },
   proceed_forward: { label: "Siga em frente", short: "F", color: "#168fd3", decision: "seguir em frente no cruzamento" },
@@ -52,7 +44,7 @@ const TIPOS_PLACA = {
   bridge: { label: "Ponte", short: "BR", color: "#6f7b86", decision: "trecho especial de ponte" }
 };
 
-const CODIGO_CONTROLADOR_PADRAO = `function control(input, api) {
+const DEFAULT_CONTROLLER_CODE = `function control(input, api) {
   // input.rightLineOffsetPx: linha contínua direita em relação ao carro.
   // Valor positivo = linha está à direita. O alvo nominal é 42 px.
   // Quando a tracejada e a contínua direita aparecem, o alvo fica dentro da faixa direita,
@@ -110,7 +102,7 @@ const CODIGO_CONTROLADOR_PADRAO = `function control(input, api) {
   };
 }`;
 
-const estado = {
+const state = {
   running: false,
   time: 0,
   lastTs: 0,
@@ -133,176 +125,176 @@ const estado = {
   stopUntil: 0
 };
 
-function registrarLog(message) {
-  const t = estado.time.toFixed(2).padStart(6, "0");
-  estado.logLines.unshift(`[${t}s] ${message}`);
-  estado.logLines = estado.logLines.slice(0, 12);
-  interfaceUsuario.log.textContent = estado.logLines.join("\n");
+function log(message) {
+  const t = state.time.toFixed(2).padStart(6, "0");
+  state.logLines.unshift(`[${t}s] ${message}`);
+  state.logLines = state.logLines.slice(0, 12);
+  ui.log.textContent = state.logLines.join("\n");
 }
 
-function parametros() {
+function params() {
   return {
-    wheelbase: Number(interfaceUsuario.wheelbase.value),
-    maxSteer: Number(interfaceUsuario.maxSteer.value) * Math.PI / 180,
-    speed: Number(interfaceUsuario.speed.value),
-    pwmMin: Number(interfaceUsuario.pwmMin.value),
-    pwmCenter: Number(interfaceUsuario.pwmCenter.value),
-    pwmMax: Number(interfaceUsuario.pwmMax.value)
+    wheelbase: Number(ui.wheelbase.value),
+    maxSteer: Number(ui.maxSteer.value) * Math.PI / 180,
+    speed: Number(ui.speed.value),
+    pwmMin: Number(ui.pwmMin.value),
+    pwmCenter: Number(ui.pwmCenter.value),
+    pwmMax: Number(ui.pwmMax.value)
   };
 }
 
-function parametrosAmbiente() {
+function envParams() {
   return {
-    light: Number(interfaceUsuario.envLight.value),
-    contrast: Number(interfaceUsuario.envContrast.value),
-    noise: Number(interfaceUsuario.envNoise.value),
-    shadow: Number(interfaceUsuario.envShadow.value)
+    light: Number(ui.envLight.value),
+    contrast: Number(ui.envContrast.value),
+    noise: Number(ui.envNoise.value),
+    shadow: Number(ui.envShadow.value)
   };
 }
 
-function escalaMundo() {
+function worldScale() {
   return 100;
 }
 
-function limitar(value, min, max) {
+function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-function normalizarGraus(rad) {
+function normalizeDeg(rad) {
   return ((((rad * 180 / Math.PI) + 180) % 360) + 360) % 360 - 180;
 }
 
-function normalizarRad(rad) {
+function normalizeRad(rad) {
   return Math.atan2(Math.sin(rad), Math.cos(rad));
 }
 
-function atualizarPixelsPista() {
-  pixelsPista = ctxPista.getImageData(0, 0, telaPista.width, telaPista.height);
+function refreshTrackPixels() {
+  trackPixels = trackCtx.getImageData(0, 0, trackCanvas.width, trackCanvas.height);
 }
 
-function pixelEm(x, y) {
+function pixelAt(x, y) {
   const px = Math.round(x);
   const py = Math.round(y);
-  if (!pixelsPista || px < 0 || py < 0 || px >= telaPista.width || py >= telaPista.height) {
+  if (!trackPixels || px < 0 || py < 0 || px >= trackCanvas.width || py >= trackCanvas.height) {
     return [0, 0, 0, 255];
   }
-  const i = (py * telaPista.width + px) * 4;
-  return [pixelsPista.data[i], pixelsPista.data[i + 1], pixelsPista.data[i + 2], 255];
+  const i = (py * trackCanvas.width + px) * 4;
+  return [trackPixels.data[i], trackPixels.data[i + 1], trackPixels.data[i + 2], 255];
 }
 
-function ruidoDeterministico(x, y, t = 0) {
+function seededNoise(x, y, t = 0) {
   const n = Math.sin(x * 12.9898 + y * 78.233 + Math.floor(t * 12) * 37.719) * 43758.5453;
   return (n - Math.floor(n)) * 2 - 1;
 }
 
-function aplicarAmbienteRgb(r, g, b, wx, wy, px = 0, py = 0) {
-  const env = parametrosAmbiente();
-  const shadowWave = 0.5 + 0.5 * Math.sin((wx + wy * 0.7) * 0.018 + estado.time * 0.7);
+function applyEnvironmentToRgb(r, g, b, wx, wy, px = 0, py = 0) {
+  const env = envParams();
+  const shadowWave = 0.5 + 0.5 * Math.sin((wx + wy * 0.7) * 0.018 + state.time * 0.7);
   const shadow = 1 - env.shadow * shadowWave;
   const vignette = 1 - env.shadow * 0.25 * Math.hypot((px || 160) - 160, (py || 90) - 90) / 185;
   const gain = env.light * shadow * vignette;
-  const noise = env.noise * ruidoDeterministico(wx + px, wy + py, estado.time);
-  const adjust = (value) => limitar(((value - 128) * env.contrast + 128) * gain + noise, 0, 255);
+  const noise = env.noise * seededNoise(wx + px, wy + py, state.time);
+  const adjust = (value) => clamp(((value - 128) * env.contrast + 128) * gain + noise, 0, 255);
   return [adjust(r), adjust(g), adjust(b)];
 }
 
-function amostraBranca(x, y) {
-  const [r, g, b] = pixelEm(x, y);
-  const [er, eg, eb] = aplicarAmbienteRgb(r, g, b, x, y);
-  return er > limiarBranco && eg > limiarBranco && eb > Math.max(150, limiarBranco - 15);
+function sampleWhite(x, y) {
+  const [r, g, b] = pixelAt(x, y);
+  const [er, eg, eb] = applyEnvironmentToRgb(r, g, b, x, y);
+  return er > whiteThreshold && eg > whiteThreshold && eb > Math.max(150, whiteThreshold - 15);
 }
 
-function carregarPistaOficial() {
+function loadOfficialTrack() {
   const img = new Image();
   img.onload = () => {
-    ctxPista.fillStyle = "#211d1e";
-    ctxPista.fillRect(0, 0, telaPista.width, telaPista.height);
-    ctxPista.drawImage(img, 0, 0, telaPista.width, telaPista.height);
-    atualizarPixelsPista();
-    interfaceUsuario.trackName.textContent = "pista oficial FIRA";
-    resetarCarro();
-    registrarLog("Pista oficial carregada");
+    trackCtx.fillStyle = "#211d1e";
+    trackCtx.fillRect(0, 0, trackCanvas.width, trackCanvas.height);
+    trackCtx.drawImage(img, 0, 0, trackCanvas.width, trackCanvas.height);
+    refreshTrackPixels();
+    ui.trackName.textContent = "pista oficial FIRA";
+    resetCar();
+    log("Pista oficial carregada");
   };
   img.onerror = () => {
-    desenharPistaPadrao();
-    atualizarPixelsPista();
-    resetarCarro();
-    registrarLog("Pista oficial não encontrada; usando pista gerada");
+    drawDefaultTrack();
+    refreshTrackPixels();
+    resetCar();
+    log("Pista oficial não encontrada; usando pista gerada");
   };
   img.src = "./assets/official_track.png";
 }
 
-function desenharPistaPadrao() {
-  const w = telaPista.width;
-  const h = telaPista.height;
-  ctxPista.fillStyle = "#202421";
-  ctxPista.fillRect(0, 0, w, h);
-  ctxPista.strokeStyle = "#f5f5ef";
-  ctxPista.lineCap = "round";
-  ctxPista.lineJoin = "round";
-  ctxPista.lineWidth = 6;
-  ctxPista.beginPath();
-  ctxPista.moveTo(130, 900);
-  ctxPista.bezierCurveTo(80, 590, 100, 260, 220, 150);
-  ctxPista.bezierCurveTo(390, 0, 750, 60, 815, 230);
-  ctxPista.bezierCurveTo(910, 480, 850, 930, 660, 1040);
-  ctxPista.bezierCurveTo(450, 1165, 185, 1070, 130, 900);
-  ctxPista.stroke();
+function drawDefaultTrack() {
+  const w = trackCanvas.width;
+  const h = trackCanvas.height;
+  trackCtx.fillStyle = "#202421";
+  trackCtx.fillRect(0, 0, w, h);
+  trackCtx.strokeStyle = "#f5f5ef";
+  trackCtx.lineCap = "round";
+  trackCtx.lineJoin = "round";
+  trackCtx.lineWidth = 6;
+  trackCtx.beginPath();
+  trackCtx.moveTo(130, 900);
+  trackCtx.bezierCurveTo(80, 590, 100, 260, 220, 150);
+  trackCtx.bezierCurveTo(390, 0, 750, 60, 815, 230);
+  trackCtx.bezierCurveTo(910, 480, 850, 930, 660, 1040);
+  trackCtx.bezierCurveTo(450, 1165, 185, 1070, 130, 900);
+  trackCtx.stroke();
 }
 
-function resetarCarro() {
-  const mode = interfaceUsuario.trackMode?.value || "city";
-  const direction = interfaceUsuario.directionMode?.value || "forward";
-  const pose = POSES_INICIAIS[`${mode}_${direction}`] || POSES_INICIAIS.city_forward;
-  estado.time = 0;
-  estado.car = { x: pose.x, y: pose.y, heading: pose.heading, steer: 0 };
-  estado.path = [];
-  estado.detections = [];
-  estado.lastError = 0;
-  estado.lastSteerCommand = 0;
-  estado.currentSpeed = 0;
-  estado.confidence = 0;
-  estado.lastInput = null;
-  estado.activeSign = null;
-  estado.handledSigns = new Set();
-  estado.maneuver = null;
-  estado.headingHold = null;
-  estado.stopUntil = 0;
-  registrarLog(`Reset feito (${mode === "city" ? "cidade/placas" : "pista externa"} - ${direction === "reverse" ? "voltando" : "indo"})`);
+function resetCar() {
+  const mode = ui.trackMode?.value || "city";
+  const direction = ui.directionMode?.value || "forward";
+  const pose = START_POSES[`${mode}_${direction}`] || START_POSES.city_forward;
+  state.time = 0;
+  state.car = { x: pose.x, y: pose.y, heading: pose.heading, steer: 0 };
+  state.path = [];
+  state.detections = [];
+  state.lastError = 0;
+  state.lastSteerCommand = 0;
+  state.currentSpeed = 0;
+  state.confidence = 0;
+  state.lastInput = null;
+  state.activeSign = null;
+  state.handledSigns = new Set();
+  state.maneuver = null;
+  state.headingHold = null;
+  state.stopUntil = 0;
+  log(`Reset feito (${mode === "city" ? "cidade/placas" : "pista externa"} - ${direction === "reverse" ? "voltando" : "indo"})`);
 }
 
-function referencialLocal() {
-  const c = estado.car;
-  return referencialPorRumo(c.heading);
+function localFrame() {
+  const c = state.car;
+  return frameFromHeading(c.heading);
 }
 
-function referencialPorRumo(heading) {
+function frameFromHeading(heading) {
   return {
     forward: { x: Math.cos(heading), y: Math.sin(heading) },
     right: { x: -Math.sin(heading), y: Math.cos(heading) }
   };
 }
 
-function varrerGruposBrancos(base, right, halfWidth) {
+function scanWhiteGroups(base, right, halfWidth) {
   const groups = [];
   let current = null;
   for (let offset = -halfWidth; offset <= halfWidth; offset += 2) {
     const x = base.x + right.x * offset;
     const y = base.y + right.y * offset;
-    if (amostraBranca(x, y)) {
+    if (sampleWhite(x, y)) {
       if (!current) current = { start: offset, end: offset, count: 0 };
       current.end = offset;
       current.count += 1;
     } else if (current) {
-      groups.push(paraGrupo(current));
+      groups.push(toGroup(current));
       current = null;
     }
   }
-  if (current) groups.push(paraGrupo(current));
+  if (current) groups.push(toGroup(current));
   return groups;
 }
 
-function paraGrupo(raw) {
+function toGroup(raw) {
   return {
     start: raw.start,
     end: raw.end,
@@ -312,11 +304,11 @@ function paraGrupo(raw) {
   };
 }
 
-function perceberLinhaDireita() {
-  const c = estado.car;
-  const { forward, right } = referencialLocal();
+function perceiveRightLine() {
+  const c = state.car;
+  const { forward, right } = localFrame();
   const scanDistances = [18, 30, 44, 62, 84, 110, 140, 174];
-  const expectedRight = limitar(estado.lastInput?.rightLineOffsetPx ?? 42, 24, 112);
+  const expectedRight = clamp(state.lastInput?.rightLineOffsetPx ?? 42, 24, 112);
   const usableRight = [];
   const usableLeft = [];
   const usableDashed = [];
@@ -324,7 +316,7 @@ function perceberLinhaDireita() {
 
   for (const dist of scanDistances) {
     const base = { x: c.x + forward.x * dist, y: c.y + forward.y * dist };
-    const groups = varrerGruposBrancos(base, right, 165)
+    const groups = scanWhiteGroups(base, right, 165)
       .filter((g) => g.width >= 2 && g.width <= 38);
 
     if (groups.length >= 7) {
@@ -346,30 +338,30 @@ function perceberLinhaDireita() {
       .filter((g) => Math.abs(g.center) <= 42)
       .sort((a, b) => Math.abs(a.center) - Math.abs(b.center))[0] || null;
 
-    if (rightLine) usableRight.push({ offset: rightLine.center, dist, weight: limitar(2.2 - dist / 125, 0.45, 2.0) });
-    if (leftLine) usableLeft.push({ offset: leftLine.center, dist, weight: limitar(1.6 - dist / 175, 0.45, 1.45) });
+    if (rightLine) usableRight.push({ offset: rightLine.center, dist, weight: clamp(2.2 - dist / 125, 0.45, 2.0) });
+    if (leftLine) usableLeft.push({ offset: leftLine.center, dist, weight: clamp(1.6 - dist / 175, 0.45, 1.45) });
     if (dashed) usableDashed.push({ offset: dashed.center, dist, weight: 1 });
 
     detections.push({
       base,
-      leftHit: leftLine ? pontoAmostra(base, right, leftLine.center) : null,
-      rightHit: rightLine ? pontoAmostra(base, right, rightLine.center) : null,
+      leftHit: leftLine ? hitAt(base, right, leftLine.center) : null,
+      rightHit: rightLine ? hitAt(base, right, rightLine.center) : null,
       centerOffset: rightLine ? rightLine.center - 64 : dashed?.center ?? null
     });
   }
 
-  const rightLineOffsetPx = estabilizarDeslocamento(deslocamentoPonderado(usableRight), estado.lastInput?.rightLineOffsetPx, usableRight.length);
-  const leftLineOffsetPx = deslocamentoPonderado(usableLeft);
-  const centerDashedOffsetPx = estabilizarDeslocamento(deslocamentoPonderado(usableDashed), estado.lastInput?.centerDashedOffsetPx, usableDashed.length);
-  const rightLineSlope = inclinacaoLinha(usableRight);
-  const laneCenterTargetPx = alvoFaixa(rightLineOffsetPx, centerDashedOffsetPx);
-  const observedSign = obterPlacaObservada();
-  const actionableSign = obterPlacaVisivel();
-  atualizarEstadoTransito(actionableSign);
-  const confidence = limitar(usableRight.length * 0.18, 0, 1);
-  const crossBarrierAhead = detectarBloqueioFrontal(forward, right);
-  const laneSafetyFault = detectarFalhaSegurancaFaixa(rightLineOffsetPx, centerDashedOffsetPx, laneCenterTargetPx, confidence);
-  const wrongLaneFault = detectarContramao(centerDashedOffsetPx, confidence);
+  const rightLineOffsetPx = stabilizeOffset(weightedOffset(usableRight), state.lastInput?.rightLineOffsetPx, usableRight.length);
+  const leftLineOffsetPx = weightedOffset(usableLeft);
+  const centerDashedOffsetPx = stabilizeOffset(weightedOffset(usableDashed), state.lastInput?.centerDashedOffsetPx, usableDashed.length);
+  const rightLineSlope = lineSlope(usableRight);
+  const laneCenterTargetPx = laneTarget(rightLineOffsetPx, centerDashedOffsetPx);
+  const observedSign = getObservedSign();
+  const actionableSign = getVisibleSign();
+  updateTrafficState(actionableSign);
+  const confidence = clamp(usableRight.length * 0.18, 0, 1);
+  const crossBarrierAhead = detectCrossBarrierAhead(forward, right);
+  const laneSafetyFault = detectLaneSafetyFault(rightLineOffsetPx, centerDashedOffsetPx, laneCenterTargetPx, confidence);
+  const wrongLaneFault = detectWrongLaneFault(centerDashedOffsetPx, confidence);
   const input = {
     rightLineOffsetPx,
     leftLineOffsetPx,
@@ -385,32 +377,32 @@ function perceberLinhaDireita() {
     crossBarrierAhead,
     laneSafetyFault,
     wrongLaneFault,
-    maneuver: entradaManobraAtual(),
-    searchSteer: interfaceUsuario.directionMode.value === "reverse" ? -0.18 : 0.18,
-    lastSteer: estado.lastSteerCommand,
-    speedSetting: parametros().speed,
-    time: estado.time,
-    headingDeg: normalizarGraus(estado.car.heading),
-    trackMode: interfaceUsuario.trackMode.value
+    maneuver: currentManeuverInput(),
+    searchSteer: ui.directionMode.value === "reverse" ? -0.18 : 0.18,
+    lastSteer: state.lastSteerCommand,
+    speedSetting: params().speed,
+    time: state.time,
+    headingDeg: normalizeDeg(state.car.heading),
+    trackMode: ui.trackMode.value
   };
 
-  estado.detections = detections;
-  estado.confidence = confidence;
-  estado.activeSign = observedSign;
-  estado.lastInput = input;
-  estado.lastError = rightLineOffsetPx === null ? 0 : (rightLineOffsetPx - (laneCenterTargetPx ?? 42)) / escalaMundo();
+  state.detections = detections;
+  state.confidence = confidence;
+  state.activeSign = observedSign;
+  state.lastInput = input;
+  state.lastError = rightLineOffsetPx === null ? 0 : (rightLineOffsetPx - (laneCenterTargetPx ?? 42)) / worldScale();
   return input;
 }
 
-function pontoAmostra(base, right, offset) {
+function hitAt(base, right, offset) {
   return { x: base.x + right.x * offset, y: base.y + right.y * offset, offset };
 }
 
-function detectarBloqueioFrontal(forward, right) {
-  if (interfaceUsuario.trackMode.value !== "city" || estado.maneuver || estado.stopUntil > estado.time) return null;
+function detectCrossBarrierAhead(forward, right) {
+  if (ui.trackMode.value !== "city" || state.maneuver || state.stopUntil > state.time) return null;
   for (const dist of [30, 44, 60, 78]) {
-    const base = { x: estado.car.x + forward.x * dist, y: estado.car.y + forward.y * dist };
-    const groups = varrerGruposBrancos(base, right, 92);
+    const base = { x: state.car.x + forward.x * dist, y: state.car.y + forward.y * dist };
+    const groups = scanWhiteGroups(base, right, 92);
     const barrier = groups.find((g) => g.width >= 48 && Math.abs(g.center) < 34);
     if (barrier) {
       return {
@@ -423,9 +415,9 @@ function detectarBloqueioFrontal(forward, right) {
   return null;
 }
 
-function detectarFalhaSegurancaFaixa(rightOffset, dashedOffset, targetOffset, confidence) {
-  if (interfaceUsuario.trackMode.value !== "city" || estado.maneuver || estado.stopUntil > estado.time) return null;
-  if (estado.handledSigns.size === 0) return null;
+function detectLaneSafetyFault(rightOffset, dashedOffset, targetOffset, confidence) {
+  if (ui.trackMode.value !== "city" || state.maneuver || state.stopUntil > state.time) return null;
+  if (state.handledSigns.size === 0) return null;
   if (rightOffset === null || confidence < 0.54) return null;
   const target = targetOffset ?? 42;
   const error = rightOffset - target;
@@ -441,9 +433,9 @@ function detectarFalhaSegurancaFaixa(rightOffset, dashedOffset, targetOffset, co
   return null;
 }
 
-function detectarContramao(dashedOffset, confidence) {
-  if (interfaceUsuario.trackMode.value !== "city" || estado.maneuver || estado.stopUntil > estado.time) return null;
-  if (estado.handledSigns.size === 0 || dashedOffset === null || confidence < 0.24) return null;
+function detectWrongLaneFault(dashedOffset, confidence) {
+  if (ui.trackMode.value !== "city" || state.maneuver || state.stopUntil > state.time) return null;
+  if (state.handledSigns.size === 0 || dashedOffset === null || confidence < 0.24) return null;
   if (dashedOffset > 6) {
     return {
       dash: Number(dashedOffset.toFixed(1)),
@@ -453,22 +445,22 @@ function detectarContramao(dashedOffset, confidence) {
   return null;
 }
 
-function deslocamentoPonderado(items) {
+function weightedOffset(items) {
   if (!items.length) return null;
   const total = items.reduce((sum, item) => sum + item.weight, 0);
   return items.reduce((sum, item) => sum + item.offset * item.weight, 0) / total;
 }
 
-function estabilizarDeslocamento(raw, previous, sampleCount) {
+function stabilizeOffset(raw, previous, sampleCount) {
   if (raw === null || raw === undefined) return null;
   if (previous === null || previous === undefined || !Number.isFinite(previous)) return raw;
   const maxStep = sampleCount >= 5 ? 28 : sampleCount >= 3 ? 16 : 10;
-  const limited = previous + limitar(raw - previous, -maxStep, maxStep);
+  const limited = previous + clamp(raw - previous, -maxStep, maxStep);
   const alpha = sampleCount >= 5 ? 0.72 : sampleCount >= 3 ? 0.52 : 0.32;
   return previous * (1 - alpha) + limited * alpha;
 }
 
-function inclinacaoLinha(items) {
+function lineSlope(items) {
   if (items.length < 2) return 0;
   const sorted = [...items].sort((a, b) => a.dist - b.dist);
   const near = sorted.slice(0, 3);
@@ -476,33 +468,33 @@ function inclinacaoLinha(items) {
   const nearOffset = near.reduce((sum, item) => sum + item.offset, 0) / near.length;
   const farOffset = far.reduce((sum, item) => sum + item.offset, 0) / far.length;
   const distSpan = Math.max(1, far[far.length - 1].dist - near[0].dist);
-  return limitar((farOffset - nearOffset) / distSpan, -1, 1);
+  return clamp((farOffset - nearOffset) / distSpan, -1, 1);
 }
 
-function alvoFaixa(rightOffset, dashedOffset) {
+function laneTarget(rightOffset, dashedOffset) {
   if (rightOffset === null || dashedOffset === null) return null;
   const laneWidth = rightOffset - dashedOffset;
   if (laneWidth < 34 || laneWidth > 120) return null;
-  return limitar(laneWidth * 0.42, 30, 50);
+  return clamp(laneWidth * 0.42, 30, 50);
 }
 
-function atualizarEstadoTransito(sign) {
-  if (estado.stopUntil > estado.time) return;
-  if (estado.stopUntil && estado.time >= estado.stopUntil) {
-    estado.stopUntil = 0;
-    estado.maneuver = null;
+function updateTrafficState(sign) {
+  if (state.stopUntil > state.time) return;
+  if (state.stopUntil && state.time >= state.stopUntil) {
+    state.stopUntil = 0;
+    state.maneuver = null;
   }
-  if (!sign || estado.handledSigns.has(sign.id)) {
-    if (estado.maneuver && estado.time > estado.maneuver.until) estado.maneuver = null;
+  if (!sign || state.handledSigns.has(sign.id)) {
+    if (state.maneuver && state.time > state.maneuver.until) state.maneuver = null;
     return;
   }
-  if (!placaAcionavel(sign)) return;
+  if (!isActionableSign(sign)) return;
 
   if (sign.type === "stop") {
-    estado.stopUntil = estado.time + 1.15;
-    estado.handledSigns.add(sign.id);
-    estado.maneuver = null;
-    registrarLog(`STOP atendido no gerador ${sign.id}`);
+    state.stopUntil = state.time + 1.15;
+    state.handledSigns.add(sign.id);
+    state.maneuver = null;
+    log(`STOP atendido no gerador ${sign.id}`);
     return;
   }
 
@@ -510,8 +502,8 @@ function atualizarEstadoTransito(sign) {
     const turnDir = sign.type === "proceed_left" ? -1 : sign.type === "proceed_right" ? 1 : 0;
     const duration = sign.type === "proceed_forward" ? 0.8 : 9.8;
     const turnDelay = turnDir ? 0.35 : 0;
-    const approach = Number.isFinite(sign.approachHeading) ? sign.approachHeading : estado.car.heading;
-    const { forward, right } = referencialPorRumo(approach);
+    const approach = Number.isFinite(sign.approachHeading) ? sign.approachHeading : state.car.heading;
+    const { forward, right } = frameFromHeading(approach);
     const side = turnDir > 0 ? right : { x: -right.x, y: -right.y };
     const exitPoint = turnDir
       ? {
@@ -519,104 +511,104 @@ function atualizarEstadoTransito(sign) {
           y: sign.y + forward.y * 82 + side.y * 118
         }
       : null;
-    estado.maneuver = {
+    state.maneuver = {
       type: sign.type,
       signId: sign.id,
       turnDir,
-      targetHeading: turnDir ? normalizarRad(approach + turnDir * Math.PI / 2) : estado.car.heading,
+      targetHeading: turnDir ? normalizeRad(approach + turnDir * Math.PI / 2) : state.car.heading,
       exitPoint,
-      startedAt: estado.time,
-      turnDelayUntil: estado.time + turnDelay,
-      until: estado.time + duration + turnDelay
+      startedAt: state.time,
+      turnDelayUntil: state.time + turnDelay,
+      until: state.time + duration + turnDelay
     };
-    estado.handledSigns.add(sign.id);
-    registrarLog(`${TIPOS_PLACA[sign.type].label} iniciado no gerador ${sign.id}`);
+    state.handledSigns.add(sign.id);
+    log(`${SIGN_TYPES[sign.type].label} iniciado no gerador ${sign.id}`);
   }
 }
 
-function entradaManobraAtual() {
-  if (estado.stopUntil > estado.time) {
-    return { stop: true, active: false, remaining: Number((estado.stopUntil - estado.time).toFixed(2)) };
+function currentManeuverInput() {
+  if (state.stopUntil > state.time) {
+    return { stop: true, active: false, remaining: Number((state.stopUntil - state.time).toFixed(2)) };
   }
-  if (estado.headingHold && estado.time <= estado.headingHold.until) {
-    const error = normalizarRad(estado.headingHold.heading - estado.car.heading);
-    const lockFrame = referencialPorRumo(estado.headingHold.heading);
-    const currentLateral = estado.car.x * lockFrame.right.x + estado.car.y * lockFrame.right.y;
-    const lateralError = Number.isFinite(estado.headingHold.desiredLateral)
-      ? estado.headingHold.desiredLateral - currentLateral
+  if (state.headingHold && state.time <= state.headingHold.until) {
+    const error = normalizeRad(state.headingHold.heading - state.car.heading);
+    const lockFrame = frameFromHeading(state.headingHold.heading);
+    const currentLateral = state.car.x * lockFrame.right.x + state.car.y * lockFrame.right.y;
+    const lateralError = Number.isFinite(state.headingHold.desiredLateral)
+      ? state.headingHold.desiredLateral - currentLateral
       : 0;
     return {
       active: true,
       type: "lane_settle",
-      steerBias: limitar(error * 0.95 + lateralError / 70, -0.58, 0.58),
+      steerBias: clamp(error * 0.95 + lateralError / 70, -0.58, 0.58),
       lateralError: Number(lateralError.toFixed(1)),
-      remaining: Number((estado.headingHold.until - estado.time).toFixed(2)),
-      targetHeadingDeg: Number(normalizarGraus(estado.headingHold.heading).toFixed(1))
+      remaining: Number((state.headingHold.until - state.time).toFixed(2)),
+      targetHeadingDeg: Number(normalizeDeg(state.headingHold.heading).toFixed(1))
     };
   }
-  if (estado.headingHold && estado.time > estado.headingHold.until) estado.headingHold = null;
-  if (!estado.maneuver || estado.time > estado.maneuver.until) return null;
-  if (estado.maneuver.turnDir && estado.maneuver.turnDelayUntil && estado.time < estado.maneuver.turnDelayUntil) {
+  if (state.headingHold && state.time > state.headingHold.until) state.headingHold = null;
+  if (!state.maneuver || state.time > state.maneuver.until) return null;
+  if (state.maneuver.turnDir && state.maneuver.turnDelayUntil && state.time < state.maneuver.turnDelayUntil) {
     return {
       active: true,
-      type: estado.maneuver.type,
+      type: state.maneuver.type,
       phase: "enter_intersection",
       steerBias: 0,
       progress: 0,
-      targetHeadingDeg: Number(normalizarGraus(estado.maneuver.targetHeading).toFixed(1)),
+      targetHeadingDeg: Number(normalizeDeg(state.maneuver.targetHeading).toFixed(1)),
       envelope: 0.35,
-      remaining: Number((estado.maneuver.turnDelayUntil - estado.time).toFixed(2))
+      remaining: Number((state.maneuver.turnDelayUntil - state.time).toFixed(2))
     };
   }
-  const turnStart = estado.maneuver.turnDelayUntil ?? estado.maneuver.startedAt ?? estado.time - 0.01;
-  const progress = 1 - ((estado.maneuver.until - estado.time) / (estado.maneuver.until - turnStart));
-  const elapsed = estado.time - turnStart;
-  if (estado.maneuver.turnDir && elapsed > 0.85) {
-    const remainingHeading = normalizarRad(estado.maneuver.targetHeading - estado.car.heading);
-    const exitDist = estado.maneuver.exitPoint
-      ? Math.hypot(estado.maneuver.exitPoint.x - estado.car.x, estado.maneuver.exitPoint.y - estado.car.y)
+  const turnStart = state.maneuver.turnDelayUntil ?? state.maneuver.startedAt ?? state.time - 0.01;
+  const progress = 1 - ((state.maneuver.until - state.time) / (state.maneuver.until - turnStart));
+  const elapsed = state.time - turnStart;
+  if (state.maneuver.turnDir && elapsed > 0.85) {
+    const remainingHeading = normalizeRad(state.maneuver.targetHeading - state.car.heading);
+    const exitDist = state.maneuver.exitPoint
+      ? Math.hypot(state.maneuver.exitPoint.x - state.car.x, state.maneuver.exitPoint.y - state.car.y)
       : 0;
     if (Math.abs(remainingHeading) < 0.13 && exitDist < 34) {
-      const lockFrame = referencialPorRumo(estado.maneuver.targetHeading);
-      const desiredLateral = estado.maneuver.exitPoint
-        ? estado.maneuver.exitPoint.x * lockFrame.right.x + estado.maneuver.exitPoint.y * lockFrame.right.y
-        : estado.car.x * lockFrame.right.x + estado.car.y * lockFrame.right.y;
-      estado.headingHold = {
-        heading: estado.maneuver.targetHeading,
+      const lockFrame = frameFromHeading(state.maneuver.targetHeading);
+      const desiredLateral = state.maneuver.exitPoint
+        ? state.maneuver.exitPoint.x * lockFrame.right.x + state.maneuver.exitPoint.y * lockFrame.right.y
+        : state.car.x * lockFrame.right.x + state.car.y * lockFrame.right.y;
+      state.headingHold = {
+        heading: state.maneuver.targetHeading,
         desiredLateral,
-        until: estado.time + 24
+        until: state.time + 24
       };
-      estado.maneuver = null;
-      return entradaManobraAtual();
+      state.maneuver = null;
+      return currentManeuverInput();
     }
   }
-  const envelope = Math.sin(limitar(progress, 0, 1) * Math.PI);
+  const envelope = Math.sin(clamp(progress, 0, 1) * Math.PI);
   let steerBias = 0;
-  if (estado.maneuver.turnDir) {
-    const exit = estado.maneuver.exitPoint;
+  if (state.maneuver.turnDir) {
+    const exit = state.maneuver.exitPoint;
     const desiredHeading = exit
-      ? Math.atan2(exit.y - estado.car.y, exit.x - estado.car.x)
-      : estado.maneuver.targetHeading;
-    const headingError = normalizarRad(desiredHeading - estado.car.heading);
-    const finalHeadingError = normalizarRad(estado.maneuver.targetHeading - estado.car.heading);
-    const dist = exit ? Math.hypot(exit.x - estado.car.x, exit.y - estado.car.y) : 999;
-    const blend = dist < 58 ? limitar(1 - dist / 58, 0, 1) : 0;
-    const command = normalizarRad(headingError * (1 - blend) + finalHeadingError * blend) / (Math.PI / 2);
-    steerBias = limitar(command * 1.35, -0.88, 0.88);
-    if (Math.abs(steerBias) < 0.24) steerBias = 0.24 * Math.sign(steerBias || estado.maneuver.turnDir);
+      ? Math.atan2(exit.y - state.car.y, exit.x - state.car.x)
+      : state.maneuver.targetHeading;
+    const headingError = normalizeRad(desiredHeading - state.car.heading);
+    const finalHeadingError = normalizeRad(state.maneuver.targetHeading - state.car.heading);
+    const dist = exit ? Math.hypot(exit.x - state.car.x, exit.y - state.car.y) : 999;
+    const blend = dist < 58 ? clamp(1 - dist / 58, 0, 1) : 0;
+    const command = normalizeRad(headingError * (1 - blend) + finalHeadingError * blend) / (Math.PI / 2);
+    steerBias = clamp(command * 1.35, -0.88, 0.88);
+    if (Math.abs(steerBias) < 0.24) steerBias = 0.24 * Math.sign(steerBias || state.maneuver.turnDir);
   }
   return {
     active: true,
-    type: estado.maneuver.type,
-    steerBias: estado.maneuver.turnDir ? steerBias : 0,
-    progress: Number(limitar(progress, 0, 1).toFixed(2)),
-    targetHeadingDeg: Number(normalizarGraus(estado.maneuver.targetHeading).toFixed(1)),
-    envelope: Number(limitar(envelope, 0.35, 1).toFixed(2)),
-    remaining: Number((estado.maneuver.until - estado.time).toFixed(2))
+    type: state.maneuver.type,
+    steerBias: state.maneuver.turnDir ? steerBias : 0,
+    progress: Number(clamp(progress, 0, 1).toFixed(2)),
+    targetHeadingDeg: Number(normalizeDeg(state.maneuver.targetHeading).toFixed(1)),
+    envelope: Number(clamp(envelope, 0.35, 1).toFixed(2)),
+    remaining: Number((state.maneuver.until - state.time).toFixed(2))
   };
 }
 
-function controladorLinhaDireitaEmbutido(input, api) {
+function builtInRightLineController(input, api) {
   const desiredRightLine = input.laneCenterTargetPx ?? 42;
   const cityMode = input.trackMode === "city";
   let steer = 0;
@@ -654,218 +646,218 @@ function controladorLinhaDireitaEmbutido(input, api) {
   };
 }
 
-function aplicarControlador(input) {
-  const api = { clamp: limitar, limitar, Math };
+function applyController(input) {
+  const api = { clamp, Math };
   let output;
   try {
-    output = interfaceUsuario.controllerMode.value === "customCode" && controladorPersonalizado
-      ? controladorPersonalizado(input, api)
-      : controladorLinhaDireitaEmbutido(input, api);
+    output = ui.controllerMode.value === "customCode" && customController
+      ? customController(input, api)
+      : builtInRightLineController(input, api);
   } catch (error) {
-    interfaceUsuario.codeStatus.textContent = `Erro no controlador: ${error.message}`;
-    output = controladorLinhaDireitaEmbutido(input, api);
+    ui.codeStatus.textContent = `Erro no controlador: ${error.message}`;
+    output = builtInRightLineController(input, api);
   }
-  const steerCommand = limitar(Number(output?.steer ?? 0), -1, 1);
-  const speedCommand = limitar(Number(output?.speed ?? parametros().speed), 0, parametros().speed);
-  estado.lastSteerCommand = steerCommand;
+  const steerCommand = clamp(Number(output?.steer ?? 0), -1, 1);
+  const speedCommand = clamp(Number(output?.speed ?? params().speed), 0, params().speed);
+  state.lastSteerCommand = steerCommand;
   return { steerCommand, speedCommand };
 }
 
-function atualizar(dt) {
-  const p = parametros();
-  const input = perceberLinhaDireita();
-  const control = aplicarControlador(input);
-  const c = estado.car;
-  const pxPerMeter = escalaMundo();
+function update(dt) {
+  const p = params();
+  const input = perceiveRightLine();
+  const control = applyController(input);
+  const c = state.car;
+  const pxPerMeter = worldScale();
   const v = control.speedCommand * pxPerMeter;
   const targetSteer = control.steerCommand * p.maxSteer;
-  estado.currentSpeed = control.speedCommand;
+  state.currentSpeed = control.speedCommand;
 
   c.steer += (targetSteer - c.steer) * Math.min(1, dt * 8);
   c.heading += (v / (p.wheelbase * pxPerMeter)) * Math.tan(c.steer) * dt;
   c.x += Math.cos(c.heading) * v * dt;
   c.y += Math.sin(c.heading) * v * dt;
-  estado.path.push({ x: c.x, y: c.y });
-  estado.path = estado.path.slice(-1000);
-  estado.time += dt;
+  state.path.push({ x: c.x, y: c.y });
+  state.path = state.path.slice(-1000);
+  state.time += dt;
 }
 
-function desenharCarro() {
-  const c = estado.car;
-  ctxSimulacao.save();
-  ctxSimulacao.translate(c.x, c.y);
-  ctxSimulacao.rotate(c.heading);
-  ctxSimulacao.fillStyle = "#111315";
-  ctxSimulacao.strokeStyle = "#d7dee2";
-  ctxSimulacao.lineWidth = 2;
-  ctxSimulacao.fillRect(-24, -13, 48, 26);
-  ctxSimulacao.strokeRect(-24, -13, 48, 26);
-  ctxSimulacao.fillStyle = "#f2c230";
-  ctxSimulacao.fillRect(5, -10, 14, 20);
-  ctxSimulacao.strokeStyle = "#24d0c4";
-  ctxSimulacao.lineWidth = 4;
-  ctxSimulacao.beginPath();
-  ctxSimulacao.moveTo(-15, -16);
-  ctxSimulacao.lineTo(-15, -25);
-  ctxSimulacao.moveTo(-15, 16);
-  ctxSimulacao.lineTo(-15, 25);
-  ctxSimulacao.stroke();
+function drawCar() {
+  const c = state.car;
+  ctx.save();
+  ctx.translate(c.x, c.y);
+  ctx.rotate(c.heading);
+  ctx.fillStyle = "#111315";
+  ctx.strokeStyle = "#d7dee2";
+  ctx.lineWidth = 2;
+  ctx.fillRect(-24, -13, 48, 26);
+  ctx.strokeRect(-24, -13, 48, 26);
+  ctx.fillStyle = "#f2c230";
+  ctx.fillRect(5, -10, 14, 20);
+  ctx.strokeStyle = "#24d0c4";
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(-15, -16);
+  ctx.lineTo(-15, -25);
+  ctx.moveTo(-15, 16);
+  ctx.lineTo(-15, 25);
+  ctx.stroke();
   for (const y of [-16, 16]) {
-    ctxSimulacao.save();
-    ctxSimulacao.translate(17, y);
-    ctxSimulacao.rotate(c.steer);
-    ctxSimulacao.beginPath();
-    ctxSimulacao.moveTo(0, -9);
-    ctxSimulacao.lineTo(0, 9);
-    ctxSimulacao.stroke();
-    ctxSimulacao.restore();
+    ctx.save();
+    ctx.translate(17, y);
+    ctx.rotate(c.steer);
+    ctx.beginPath();
+    ctx.moveTo(0, -9);
+    ctx.lineTo(0, 9);
+    ctx.stroke();
+    ctx.restore();
   }
-  ctxSimulacao.restore();
+  ctx.restore();
 }
 
-function pwmServo(steer, p) {
+function servoPwm(steer, p) {
   if (steer >= 0) return p.pwmCenter + (steer / p.maxSteer) * (p.pwmMax - p.pwmCenter);
   return p.pwmCenter + (steer / p.maxSteer) * (p.pwmCenter - p.pwmMin);
 }
 
-function renderizarCamera() {
-  const img = ctxCamera.createImageData(telaCamera.width, telaCamera.height);
-  const c = estado.car;
-  const { forward, right } = referencialLocal();
-  for (let py = 0; py < telaCamera.height; py += 1) {
-    const v = py / (telaCamera.height - 1);
+function renderCamera() {
+  const img = cameraCtx.createImageData(cameraCanvas.width, cameraCanvas.height);
+  const c = state.car;
+  const { forward, right } = localFrame();
+  for (let py = 0; py < cameraCanvas.height; py += 1) {
+    const v = py / (cameraCanvas.height - 1);
     const forwardDist = 38 + (1 - v) * (1 - v) * 250;
     const halfWidth = 42 + (1 - v) * 138;
-    for (let px = 0; px < telaCamera.width; px += 1) {
-      const u = (px / (telaCamera.width - 1) - 0.5) * 2;
+    for (let px = 0; px < cameraCanvas.width; px += 1) {
+      const u = (px / (cameraCanvas.width - 1) - 0.5) * 2;
       const lateral = u * halfWidth;
       const wx = c.x + forward.x * forwardDist + right.x * lateral;
       const wy = c.y + forward.y * forwardDist + right.y * lateral;
-      const [r, g, b] = pixelEm(wx, wy);
-      const [er, eg, eb] = aplicarAmbienteRgb(r, g, b, wx, wy, px, py);
-      const idx = (py * telaCamera.width + px) * 4;
+      const [r, g, b] = pixelAt(wx, wy);
+      const [er, eg, eb] = applyEnvironmentToRgb(r, g, b, wx, wy, px, py);
+      const idx = (py * cameraCanvas.width + px) * 4;
       img.data[idx] = er;
       img.data[idx + 1] = eg;
       img.data[idx + 2] = eb;
       img.data[idx + 3] = 255;
     }
   }
-  ctxCamera.putImageData(img, 0, 0);
-  ultimaImagemCamera = img;
-  ctxCamera.strokeStyle = "rgba(242, 194, 48, 0.9)";
-  ctxCamera.lineWidth = 1;
-  ctxCamera.beginPath();
-  ctxCamera.moveTo(telaCamera.width / 2, telaCamera.height - 1);
-  ctxCamera.lineTo(telaCamera.width / 2, 0);
-  ctxCamera.stroke();
-  renderizarCorredorCamera();
-  renderizarPlacasCamera();
+  cameraCtx.putImageData(img, 0, 0);
+  lastCameraImage = img;
+  cameraCtx.strokeStyle = "rgba(242, 194, 48, 0.9)";
+  cameraCtx.lineWidth = 1;
+  cameraCtx.beginPath();
+  cameraCtx.moveTo(cameraCanvas.width / 2, cameraCanvas.height - 1);
+  cameraCtx.lineTo(cameraCanvas.width / 2, 0);
+  cameraCtx.stroke();
+  renderCameraCorridor();
+  renderCameraSigns();
 }
 
-function renderizarCorredorCamera() {
-  const prediction = preverTrajetoria();
+function renderCameraCorridor() {
+  const prediction = predictTrajectory();
   const alpha = prediction.maneuver?.active ? 0.95 : 0.45;
-  desenharLinhaCorredorCamera(prediction.points, -prediction.halfLane, `rgba(36,208,196,${alpha})`);
-  desenharLinhaCorredorCamera(prediction.points, prediction.halfLane, `rgba(242,194,48,${alpha})`);
+  drawCameraCorridorLine(prediction.points, -prediction.halfLane, `rgba(36,208,196,${alpha})`);
+  drawCameraCorridorLine(prediction.points, prediction.halfLane, `rgba(242,194,48,${alpha})`);
 }
 
-function desenharLinhaCorredorCamera(points, lateralOffset, color) {
+function drawCameraCorridorLine(points, lateralOffset, color) {
   const projected = points
     .map((pt) => {
       const rightAtPoint = { x: -Math.sin(pt.heading), y: Math.cos(pt.heading) };
-      return projetarMundoNaCamera(pt.x + rightAtPoint.x * lateralOffset, pt.y + rightAtPoint.y * lateralOffset);
+      return projectWorldToCamera(pt.x + rightAtPoint.x * lateralOffset, pt.y + rightAtPoint.y * lateralOffset);
     })
     .filter(Boolean);
   if (projected.length < 2) return;
-  ctxCamera.save();
-  ctxCamera.strokeStyle = color;
-  ctxCamera.lineWidth = 2;
-  ctxCamera.lineCap = "round";
-  ctxCamera.lineJoin = "round";
-  ctxCamera.beginPath();
+  cameraCtx.save();
+  cameraCtx.strokeStyle = color;
+  cameraCtx.lineWidth = 2;
+  cameraCtx.lineCap = "round";
+  cameraCtx.lineJoin = "round";
+  cameraCtx.beginPath();
   projected.forEach((pt, index) => {
-    if (index === 0) ctxCamera.moveTo(pt.x, pt.y);
-    else ctxCamera.lineTo(pt.x, pt.y);
+    if (index === 0) cameraCtx.moveTo(pt.x, pt.y);
+    else cameraCtx.lineTo(pt.x, pt.y);
   });
-  ctxCamera.stroke();
-  ctxCamera.restore();
+  cameraCtx.stroke();
+  cameraCtx.restore();
 }
 
-function projetarMundoNaCamera(x, y) {
-  const c = estado.car;
-  const { forward, right } = referencialLocal();
+function projectWorldToCamera(x, y) {
+  const c = state.car;
+  const { forward, right } = localFrame();
   const dx = x - c.x;
   const dy = y - c.y;
   const forwardDist = dx * forward.x + dy * forward.y;
   const lateral = dx * right.x + dy * right.y;
-  return projetarNaCamera(forwardDist, lateral);
+  return projectToCamera(forwardDist, lateral);
 }
 
-function renderizarPlacasCamera() {
-  const visible = obterPlacasVisiveis().slice(0, 3);
+function renderCameraSigns() {
+  const visible = getVisibleSigns().slice(0, 3);
   for (const sign of visible) {
-    const projected = projetarNaCamera(sign.forward, sign.lateral);
+    const projected = projectToCamera(sign.forward, sign.lateral);
     if (!projected) continue;
-    desenharSimboloPlaca(ctxCamera, sign.type, projected.x, projected.y, projected.size, 0);
+    drawSignSymbol(cameraCtx, sign.type, projected.x, projected.y, projected.size, 0);
   }
 }
 
-function projetarNaCamera(forwardDist, lateral) {
+function projectToCamera(forwardDist, lateral) {
   if (forwardDist < 22 || forwardDist > 245) return null;
-  const v = 1 - Math.sqrt(limitar((forwardDist - 38) / 250, 0, 1));
+  const v = 1 - Math.sqrt(clamp((forwardDist - 38) / 250, 0, 1));
   const halfWidth = 42 + (1 - v) * 138;
   if (Math.abs(lateral) > halfWidth) return null;
   return {
-    x: telaCamera.width / 2 + (lateral / halfWidth) * (telaCamera.width / 2),
-    y: v * (telaCamera.height - 1),
-    size: limitar(30 - forwardDist / 12, 10, 24)
+    x: cameraCanvas.width / 2 + (lateral / halfWidth) * (cameraCanvas.width / 2),
+    y: v * (cameraCanvas.height - 1),
+    size: clamp(30 - forwardDist / 12, 10, 24)
   };
 }
 
-function renderizarProcessamento() {
-  if (!ultimaImagemCamera) return;
-  const out = ctxProcessamento.createImageData(telaProcessamento.width, telaProcessamento.height);
-  const data = ultimaImagemCamera.data;
+function renderProcessing() {
+  if (!lastCameraImage) return;
+  const out = processedCtx.createImageData(processedCanvas.width, processedCanvas.height);
+  const data = lastCameraImage.data;
   for (let i = 0; i < data.length; i += 4) {
-    const white = data[i] > limiarBranco && data[i + 1] > limiarBranco && data[i + 2] > Math.max(150, limiarBranco - 15);
+    const white = data[i] > whiteThreshold && data[i + 1] > whiteThreshold && data[i + 2] > Math.max(150, whiteThreshold - 15);
     out.data[i] = white ? 255 : 0;
     out.data[i + 1] = white ? 255 : 0;
     out.data[i + 2] = white ? 255 : 0;
     out.data[i + 3] = 255;
   }
-  ctxProcessamento.putImageData(out, 0, 0);
+  processedCtx.putImageData(out, 0, 0);
 
-  ctxProcessamento.strokeStyle = "rgba(242,194,48,0.85)";
-  ctxProcessamento.lineWidth = 1;
+  processedCtx.strokeStyle = "rgba(242,194,48,0.85)";
+  processedCtx.lineWidth = 1;
   for (const y of [132, 118, 102, 86, 70, 54, 38]) {
-    ctxProcessamento.beginPath();
-    ctxProcessamento.moveTo(0, y);
-    ctxProcessamento.lineTo(telaProcessamento.width, y);
-    ctxProcessamento.stroke();
+    processedCtx.beginPath();
+    processedCtx.moveTo(0, y);
+    processedCtx.lineTo(processedCanvas.width, y);
+    processedCtx.stroke();
   }
 
-  ctxProcessamento.strokeStyle = "rgba(36,208,196,0.9)";
-  ctxProcessamento.beginPath();
-  ctxProcessamento.moveTo(telaProcessamento.width / 2, 0);
-  ctxProcessamento.lineTo(telaProcessamento.width / 2, telaProcessamento.height);
-  ctxProcessamento.stroke();
+  processedCtx.strokeStyle = "rgba(36,208,196,0.9)";
+  processedCtx.beginPath();
+  processedCtx.moveTo(processedCanvas.width / 2, 0);
+  processedCtx.lineTo(processedCanvas.width / 2, processedCanvas.height);
+  processedCtx.stroke();
 
-  ctxProcessamento.strokeStyle = "rgba(36,208,196,0.45)";
-  ctxProcessamento.setLineDash([5, 5]);
-  ctxProcessamento.beginPath();
-  const targetOffset = estado.lastInput?.laneCenterTargetPx ?? 42;
-  ctxProcessamento.moveTo(telaProcessamento.width / 2 + targetOffset, 0);
-  ctxProcessamento.lineTo(telaProcessamento.width / 2 + targetOffset, telaProcessamento.height);
-  ctxProcessamento.stroke();
-  ctxProcessamento.setLineDash([]);
+  processedCtx.strokeStyle = "rgba(36,208,196,0.45)";
+  processedCtx.setLineDash([5, 5]);
+  processedCtx.beginPath();
+  const targetOffset = state.lastInput?.laneCenterTargetPx ?? 42;
+  processedCtx.moveTo(processedCanvas.width / 2 + targetOffset, 0);
+  processedCtx.lineTo(processedCanvas.width / 2 + targetOffset, processedCanvas.height);
+  processedCtx.stroke();
+  processedCtx.setLineDash([]);
 
-  ctxProcessamento.fillStyle = "#24d0c4";
-  const input = estado.lastInput;
+  processedCtx.fillStyle = "#24d0c4";
+  const input = state.lastInput;
   if (input) {
-    desenharPontoProcessamento(input.rightLineOffsetPx, 116, "#24d0c4");
-    desenharPontoProcessamento(input.leftLineOffsetPx, 142, "#ee584f");
-    desenharPontoProcessamento(input.centerDashedOffsetPx, 90, "#f2c230");
-    interfaceUsuario.visionReadout.textContent = [
+    drawProcessingPoint(input.rightLineOffsetPx, 116, "#24d0c4");
+    drawProcessingPoint(input.leftLineOffsetPx, 142, "#ee584f");
+    drawProcessingPoint(input.centerDashedOffsetPx, 90, "#f2c230");
+    ui.visionReadout.textContent = [
       `right: ${fmt(input.rightLineOffsetPx)} px (${input.rightLineSamples} amostras)`,
       `left : ${fmt(input.leftLineOffsetPx)} px (${input.leftLineSamples} amostras)`,
       `dash : ${fmt(input.centerDashedOffsetPx)} px (${input.dashedSamples} amostras)`,
@@ -877,121 +869,121 @@ function renderizarProcessamento() {
       `thresh: ${whiteThreshold}`
     ].join("\n");
   } else {
-    interfaceUsuario.visionReadout.textContent = `aguardando frame\nthresh: ${whiteThreshold}`;
+    ui.visionReadout.textContent = `aguardando frame\nthresh: ${whiteThreshold}`;
   }
 }
 
-function desenharPontoProcessamento(offset, y, color) {
+function drawProcessingPoint(offset, y, color) {
   if (offset === null || offset === undefined) return;
-  const x = telaProcessamento.width / 2 + offset;
-  ctxProcessamento.fillStyle = color;
-  ctxProcessamento.beginPath();
-  ctxProcessamento.arc(limitar(x, 0, telaProcessamento.width), y, 5, 0, Math.PI * 2);
-  ctxProcessamento.fill();
+  const x = processedCanvas.width / 2 + offset;
+  processedCtx.fillStyle = color;
+  processedCtx.beginPath();
+  processedCtx.arc(clamp(x, 0, processedCanvas.width), y, 5, 0, Math.PI * 2);
+  processedCtx.fill();
 }
 
-function formatarValor(value) {
+function fmt(value) {
   return value === null || value === undefined ? "none" : value.toFixed(1);
 }
 
-function renderizar() {
-  ctxSimulacao.clearRect(0, 0, telaSimulacao.width, telaSimulacao.height);
-  ctxSimulacao.drawImage(telaPista, 0, 0, telaSimulacao.width, telaSimulacao.height);
+function render() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(trackCanvas, 0, 0, canvas.width, canvas.height);
 
-  if (interfaceUsuario.showPath.checked && estado.path.length > 1) {
-    ctxSimulacao.strokeStyle = "#42d357";
-    ctxSimulacao.lineWidth = 2;
-    ctxSimulacao.beginPath();
-    ctxSimulacao.moveTo(estado.path[0].x, estado.path[0].y);
-    for (const pt of estado.path) ctxSimulacao.lineTo(pt.x, pt.y);
-    ctxSimulacao.stroke();
+  if (ui.showPath.checked && state.path.length > 1) {
+    ctx.strokeStyle = "#42d357";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(state.path[0].x, state.path[0].y);
+    for (const pt of state.path) ctx.lineTo(pt.x, pt.y);
+    ctx.stroke();
   }
 
-  if (interfaceUsuario.showSigns.checked) renderizarPlacasNaPista();
-  renderizarCorredorPlanejado();
+  if (ui.showSigns.checked) renderSignsOnTrack();
+  renderPlannedCorridor();
 
-  if (interfaceUsuario.showRays.checked) {
-    for (const d of estado.detections) {
-      ctxSimulacao.strokeStyle = d.skipped ? "rgba(238,88,79,0.75)" : "rgba(242,194,48,0.85)";
-      ctxSimulacao.lineWidth = 1;
-      ctxSimulacao.beginPath();
-      if (d.leftHit) { ctxSimulacao.moveTo(d.base.x, d.base.y); ctxSimulacao.lineTo(d.leftHit.x, d.leftHit.y); }
-      if (d.rightHit) { ctxSimulacao.moveTo(d.base.x, d.base.y); ctxSimulacao.lineTo(d.rightHit.x, d.rightHit.y); }
-      ctxSimulacao.stroke();
+  if (ui.showRays.checked) {
+    for (const d of state.detections) {
+      ctx.strokeStyle = d.skipped ? "rgba(238,88,79,0.75)" : "rgba(242,194,48,0.85)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      if (d.leftHit) { ctx.moveTo(d.base.x, d.base.y); ctx.lineTo(d.leftHit.x, d.leftHit.y); }
+      if (d.rightHit) { ctx.moveTo(d.base.x, d.base.y); ctx.lineTo(d.rightHit.x, d.rightHit.y); }
+      ctx.stroke();
     }
   }
 
-  if (interfaceUsuario.showCenterline.checked) {
-    ctxSimulacao.fillStyle = "#24d0c4";
-    for (const d of estado.detections.filter((v) => v.centerOffset !== null)) {
-      ctxSimulacao.beginPath();
-      ctxSimulacao.arc(d.base.x, d.base.y, 3, 0, Math.PI * 2);
-      ctxSimulacao.fill();
+  if (ui.showCenterline.checked) {
+    ctx.fillStyle = "#24d0c4";
+    for (const d of state.detections.filter((v) => v.centerOffset !== null)) {
+      ctx.beginPath();
+      ctx.arc(d.base.x, d.base.y, 3, 0, Math.PI * 2);
+      ctx.fill();
     }
   }
 
-  desenharCarro();
-  renderizarCamera();
-  renderizarProcessamento();
-  atualizarTelemetria();
+  drawCar();
+  renderCamera();
+  renderProcessing();
+  updateTelemetry();
 }
 
-function atualizarTelemetria() {
-  const p = parametros();
-  const pwm = pwmServo(estado.car.steer, p);
-  const steerText = `${(estado.car.steer * 180 / Math.PI).toFixed(1)}°`;
-  const speedText = `${estado.currentSpeed.toFixed(2)} m/s`;
-  const errorText = `${estado.lastError.toFixed(3)} m`;
-  const headingText = `${normalizarGraus(estado.car.heading).toFixed(1)}°`;
-  interfaceUsuario.steerMetric.textContent = steerText;
-  interfaceUsuario.pwmMetric.textContent = `${pwm.toFixed(0)} µs`;
-  interfaceUsuario.speedMetric.textContent = speedText;
-  interfaceUsuario.errorMetric.textContent = errorText;
-  interfaceUsuario.headingMetric.textContent = headingText;
+function updateTelemetry() {
+  const p = params();
+  const pwm = servoPwm(state.car.steer, p);
+  const steerText = `${(state.car.steer * 180 / Math.PI).toFixed(1)}°`;
+  const speedText = `${state.currentSpeed.toFixed(2)} m/s`;
+  const errorText = `${state.lastError.toFixed(3)} m`;
+  const headingText = `${normalizeDeg(state.car.heading).toFixed(1)}°`;
+  ui.steerMetric.textContent = steerText;
+  ui.pwmMetric.textContent = `${pwm.toFixed(0)} µs`;
+  ui.speedMetric.textContent = speedText;
+  ui.errorMetric.textContent = errorText;
+  ui.headingMetric.textContent = headingText;
   document.getElementById("steerMetricMirror").textContent = steerText;
   document.getElementById("speedMetricMirror").textContent = speedText;
   document.getElementById("errorMetricMirror").textContent = errorText;
   document.getElementById("headingMetricMirror").textContent = headingText;
-  interfaceUsuario.fpsMetric.textContent = `${estado.fps.toFixed(0)}`;
-  interfaceUsuario.clock.textContent = `${estado.time.toFixed(3)}s`;
-  interfaceUsuario.hz.textContent = `${estado.fps.toFixed(1)} Hz`;
-  atualizarLeituraPlaca();
+  ui.fpsMetric.textContent = `${state.fps.toFixed(0)}`;
+  ui.clock.textContent = `${state.time.toFixed(3)}s`;
+  ui.hz.textContent = `${state.fps.toFixed(1)} Hz`;
+  updateSignReadout();
   document.body.dataset.simState = JSON.stringify({
-    time: Number(estado.time.toFixed(3)),
-    x: Number(estado.car.x.toFixed(2)),
-    y: Number(estado.car.y.toFixed(2)),
-    headingDeg: Number(normalizarGraus(estado.car.heading).toFixed(2)),
-    steerDeg: Number((estado.car.steer * 180 / Math.PI).toFixed(2)),
-    speedMps: Number(estado.currentSpeed.toFixed(2)),
-    rightLineOffsetPx: arredondarOuNulo(estado.lastInput?.rightLineOffsetPx),
-    leftLineOffsetPx: arredondarOuNulo(estado.lastInput?.leftLineOffsetPx),
-    centerDashedOffsetPx: arredondarOuNulo(estado.lastInput?.centerDashedOffsetPx),
-    confidence: Number(estado.confidence.toFixed(2)),
-    sign: estado.activeSign ? { type: estado.activeSign.type, forward: arredondarOuNulo(estado.activeSign.forward), lateral: arredondarOuNulo(estado.activeSign.lateral) } : null,
-    crossBarrierAhead: estado.lastInput?.crossBarrierAhead || null,
-    laneSafetyFault: estado.lastInput?.laneSafetyFault || null,
-    wrongLaneFault: estado.lastInput?.wrongLaneFault || null,
-    maneuver: entradaManobraAtual(),
-    plannedCorridor: resumoCorredorPlanejado(),
-    controllerMode: interfaceUsuario.controllerMode.value,
-    trackMode: interfaceUsuario.trackMode.value,
-    directionMode: interfaceUsuario.directionMode.value
+    time: Number(state.time.toFixed(3)),
+    x: Number(state.car.x.toFixed(2)),
+    y: Number(state.car.y.toFixed(2)),
+    headingDeg: Number(normalizeDeg(state.car.heading).toFixed(2)),
+    steerDeg: Number((state.car.steer * 180 / Math.PI).toFixed(2)),
+    speedMps: Number(state.currentSpeed.toFixed(2)),
+    rightLineOffsetPx: roundOrNull(state.lastInput?.rightLineOffsetPx),
+    leftLineOffsetPx: roundOrNull(state.lastInput?.leftLineOffsetPx),
+    centerDashedOffsetPx: roundOrNull(state.lastInput?.centerDashedOffsetPx),
+    confidence: Number(state.confidence.toFixed(2)),
+    sign: state.activeSign ? { type: state.activeSign.type, forward: roundOrNull(state.activeSign.forward), lateral: roundOrNull(state.activeSign.lateral) } : null,
+    crossBarrierAhead: state.lastInput?.crossBarrierAhead || null,
+    laneSafetyFault: state.lastInput?.laneSafetyFault || null,
+    wrongLaneFault: state.lastInput?.wrongLaneFault || null,
+    maneuver: currentManeuverInput(),
+    plannedCorridor: plannedCorridorSummary(),
+    controllerMode: ui.controllerMode.value,
+    trackMode: ui.trackMode.value,
+    directionMode: ui.directionMode.value
   });
 }
 
-function preverTrajetoria() {
-  const p = parametros();
-  const maneuver = entradaManobraAtual();
-  const steerCommand = maneuver?.active ? maneuver.steerBias : estado.lastSteerCommand;
-  const speed = maneuver?.active ? 0.22 : Math.max(estado.currentSpeed, 0.32);
-  const pxPerMeter = escalaMundo();
+function predictTrajectory() {
+  const p = params();
+  const maneuver = currentManeuverInput();
+  const steerCommand = maneuver?.active ? maneuver.steerBias : state.lastSteerCommand;
+  const speed = maneuver?.active ? 0.22 : Math.max(state.currentSpeed, 0.32);
+  const pxPerMeter = worldScale();
   const dt = 0.12;
   const horizon = maneuver?.active ? 2.9 : 1.8;
-  const pose = { ...estado.car };
+  const pose = { ...state.car };
   const points = [{ x: pose.x, y: pose.y, heading: pose.heading }];
 
   for (let t = 0; t < horizon; t += dt) {
-    const steerRad = limitar(steerCommand, -1, 1) * p.maxSteer;
+    const steerRad = clamp(steerCommand, -1, 1) * p.maxSteer;
     const v = speed * pxPerMeter;
     pose.heading += (v / (p.wheelbase * pxPerMeter)) * Math.tan(steerRad) * dt;
     pose.x += Math.cos(pose.heading) * v * dt;
@@ -1001,8 +993,8 @@ function preverTrajetoria() {
   return { points, maneuver, halfLane: 28 };
 }
 
-function resumoCorredorPlanejado() {
-  const prediction = preverTrajetoria();
+function plannedCorridorSummary() {
+  const prediction = predictTrajectory();
   const end = prediction.points[prediction.points.length - 1];
   return {
     active: Boolean(prediction.maneuver?.active),
@@ -1012,15 +1004,15 @@ function resumoCorredorPlanejado() {
   };
 }
 
-function renderizarCorredorPlanejado() {
-  const prediction = preverTrajetoria();
+function renderPlannedCorridor() {
+  const prediction = predictTrajectory();
   if (prediction.points.length < 2) return;
   const alpha = prediction.maneuver?.active ? 0.9 : 0.42;
-  desenharLinhaCorredor(ctxSimulacao, prediction.points, -prediction.halfLane, `rgba(36,208,196,${alpha})`, 3);
-  desenharLinhaCorredor(ctxSimulacao, prediction.points, prediction.halfLane, `rgba(242,194,48,${alpha})`, 3);
+  drawCorridorLine(ctx, prediction.points, -prediction.halfLane, `rgba(36,208,196,${alpha})`, 3);
+  drawCorridorLine(ctx, prediction.points, prediction.halfLane, `rgba(242,194,48,${alpha})`, 3);
 }
 
-function desenharLinhaCorredor(targetCtx, points, lateralOffset, color, width) {
+function drawCorridorLine(targetCtx, points, lateralOffset, color, width) {
   targetCtx.save();
   targetCtx.strokeStyle = color;
   targetCtx.lineWidth = width;
@@ -1038,29 +1030,29 @@ function desenharLinhaCorredor(targetCtx, points, lateralOffset, color, width) {
   targetCtx.restore();
 }
 
-function arredondarOuNulo(value) {
+function roundOrNull(value) {
   return value === null || value === undefined ? null : Number(value.toFixed(2));
 }
 
-function quadro(ts) {
-  if (!estado.lastTs) estado.lastTs = ts;
-  const rawDt = Math.min(0.04, (ts - estado.lastTs) / 1000);
-  estado.lastTs = ts;
-  estado.fps = estado.fps * 0.9 + (1 / Math.max(rawDt, 0.001)) * 0.1;
-  if (estado.running) atualizar(rawDt);
-  renderizar();
-  requestAnimationFrame(quadro);
+function frame(ts) {
+  if (!state.lastTs) state.lastTs = ts;
+  const rawDt = Math.min(0.04, (ts - state.lastTs) / 1000);
+  state.lastTs = ts;
+  state.fps = state.fps * 0.9 + (1 / Math.max(rawDt, 0.001)) * 0.1;
+  if (state.running) update(rawDt);
+  render();
+  requestAnimationFrame(frame);
 }
 
-function compilarCodigoPersonalizado() {
-  const source = interfaceUsuario.codeEditor.value;
-  if (pareceCodigoRoboPython(source)) {
-    aplicarPerfilRoboPython(source);
+function compileCustomCode() {
+  const source = ui.codeEditor.value;
+  if (looksLikePythonRobotCode(source)) {
+    applyPythonRobotProfile(source);
     return;
   }
   try {
-    controladorPersonalizado = new Function("input", "api", `${source}\nreturn control(input, api);`);
-    controladorPersonalizado({
+    customController = new Function("input", "api", `${source}\nreturn control(input, api);`);
+    customController({
       confidence: 0,
       lastSteer: 0,
       rightLineOffsetPx: null,
@@ -1070,73 +1062,73 @@ function compilarCodigoPersonalizado() {
       laneCenterTargetPx: null,
       sign: null,
       maneuver: null,
-      searchSteer: interfaceUsuario.directionMode.value === "reverse" ? -0.18 : 0.18,
-      trackMode: interfaceUsuario.trackMode.value
-    }, { limitar, Math });
-    interfaceUsuario.codeStatus.textContent = "Código aplicado.";
-    interfaceUsuario.controllerMode.value = "customCode";
+      searchSteer: ui.directionMode.value === "reverse" ? -0.18 : 0.18,
+      trackMode: ui.trackMode.value
+    }, { clamp, Math });
+    ui.codeStatus.textContent = "Código aplicado.";
+    ui.controllerMode.value = "customCode";
   } catch (error) {
-    controladorPersonalizado = null;
-    interfaceUsuario.codeStatus.textContent = `Erro: ${error.message}`;
+    customController = null;
+    ui.codeStatus.textContent = `Erro: ${error.message}`;
   }
 }
 
-function placasPermitidasSelecionadas() {
+function selectedAllowedSigns() {
   const boxes = [...document.querySelectorAll(".allowedSign")].filter((box) => box.checked);
   const values = boxes.map((box) => box.value);
   return values.length ? values : ["proceed_forward"];
 }
 
-function escolherPlaca(allowed) {
-  const forced = interfaceUsuario.signType.value;
+function chooseSign(allowed) {
+  const forced = ui.signType.value;
   if (forced !== "random" && allowed.includes(forced)) return forced;
   return allowed[Math.floor(Math.random() * allowed.length)] || "proceed_forward";
 }
 
-function adicionarGeradorPlaca(x, y) {
-  const allowed = placasPermitidasSelecionadas();
+function addSignGenerator(x, y) {
+  const allowed = selectedAllowedSigns();
   const generator = {
-    id: estado.nextSignId++,
+    id: state.nextSignId++,
     x,
     y,
     allowed,
-    approachHeading: estado.car.heading,
-    type: escolherPlaca(allowed)
+    approachHeading: state.car.heading,
+    type: chooseSign(allowed)
   };
-  estado.signGenerators.push(generator);
-  salvarGeradoresPlaca();
-  atualizarListaPlacas();
-  registrarLog(`Gerador ${generator.id} criado: ${TIPOS_PLACA[generator.type].label}`);
+  state.signGenerators.push(generator);
+  saveSignGenerators();
+  updateSignList();
+  log(`Gerador ${generator.id} criado: ${SIGN_TYPES[generator.type].label}`);
 }
 
-function sortearPlacas() {
-  for (const generator of estado.signGenerators) {
-    generator.type = escolherPlaca(generator.allowed);
+function randomizeSigns() {
+  for (const generator of state.signGenerators) {
+    generator.type = chooseSign(generator.allowed);
   }
-  salvarGeradoresPlaca();
-  atualizarListaPlacas();
-  registrarLog("Placas sorteadas");
+  saveSignGenerators();
+  updateSignList();
+  log("Placas sorteadas");
 }
 
-function limparPlacas() {
-  estado.signGenerators = [];
-  estado.activeSign = null;
-  salvarGeradoresPlaca();
-  atualizarListaPlacas();
-  registrarLog("Geradores de placa limpos");
+function clearSigns() {
+  state.signGenerators = [];
+  state.activeSign = null;
+  saveSignGenerators();
+  updateSignList();
+  log("Geradores de placa limpos");
 }
 
-function obterPlacasVisiveis() {
-  const c = estado.car;
-  const { forward, right } = referencialLocal();
-  return estado.signGenerators
+function getVisibleSigns() {
+  const c = state.car;
+  const { forward, right } = localFrame();
+  return state.signGenerators
     .map((generator) => {
       const dx = generator.x - c.x;
       const dy = generator.y - c.y;
       const f = dx * forward.x + dy * forward.y;
       const l = dx * right.x + dy * right.y;
       const approachError = Number.isFinite(generator.approachHeading)
-        ? Math.abs(normalizarRad(c.heading - generator.approachHeading))
+        ? Math.abs(normalizeRad(c.heading - generator.approachHeading))
         : 0;
       return { ...generator, forward: f, lateral: l, approachError, distance: Math.hypot(dx, dy) };
     })
@@ -1144,15 +1136,15 @@ function obterPlacasVisiveis() {
     .sort((a, b) => a.forward - b.forward);
 }
 
-function obterPlacaVisivel() {
-  return obterPlacasVisiveis().find((sign) => placaAcionavel(sign) && !estado.handledSigns.has(sign.id)) || null;
+function getVisibleSign() {
+  return getVisibleSigns().find((sign) => isActionableSign(sign) && !state.handledSigns.has(sign.id)) || null;
 }
 
-function obterPlacaObservada() {
-  return obterPlacasVisiveis().find((sign) => !estado.handledSigns.has(sign.id)) || null;
+function getObservedSign() {
+  return getVisibleSigns().find((sign) => !state.handledSigns.has(sign.id)) || null;
 }
 
-function placaAcionavel(sign) {
+function isActionableSign(sign) {
   const minForward = sign.type === "stop" ? 8 : 2;
   const maxForward = sign.type === "stop" ? 28 : 18;
   if (sign.type !== "stop") {
@@ -1161,97 +1153,97 @@ function placaAcionavel(sign) {
   return sign.forward > minForward && sign.forward < maxForward && sign.lateral > 8 && sign.lateral < 102 && sign.approachError < 0.85;
 }
 
-function atualizarListaPlacas() {
-  if (!interfaceUsuario.signList) return;
-  interfaceUsuario.signList.textContent = estado.signGenerators.length
-    ? estado.signGenerators.map((g) => {
-      const allowed = g.allowed.map((type) => TIPOS_PLACA[type]?.short || type).join(",");
-      const dir = Number.isFinite(g.approachHeading) ? `${normalizarGraus(g.approachHeading).toFixed(0)}°` : "qualquer";
-      return `#${g.id} ${TIPOS_PLACA[g.type].label}  x=${g.x.toFixed(0)} y=${g.y.toFixed(0)}  sentido=${dir}  permitidas=[${allowed}]`;
+function updateSignList() {
+  if (!ui.signList) return;
+  ui.signList.textContent = state.signGenerators.length
+    ? state.signGenerators.map((g) => {
+      const allowed = g.allowed.map((type) => SIGN_TYPES[type]?.short || type).join(",");
+      const dir = Number.isFinite(g.approachHeading) ? `${normalizeDeg(g.approachHeading).toFixed(0)}°` : "qualquer";
+      return `#${g.id} ${SIGN_TYPES[g.type].label}  x=${g.x.toFixed(0)} y=${g.y.toFixed(0)}  sentido=${dir}  permitidas=[${allowed}]`;
     }).join("\n")
     : "sem geradores";
 }
 
-function salvarGeradoresPlaca() {
+function saveSignGenerators() {
   try {
-    localStorage.setItem("ackermann.signGenerators", JSON.stringify(estado.signGenerators));
-    localStorage.setItem("ackermann.nextSignId", String(estado.nextSignId));
+    localStorage.setItem("ackermann.signGenerators", JSON.stringify(state.signGenerators));
+    localStorage.setItem("ackermann.nextSignId", String(state.nextSignId));
   } catch (error) {
-    registrarLog(`Nao foi possivel salvar geradores: ${error.message}`);
+    log(`Nao foi possivel salvar geradores: ${error.message}`);
   }
 }
 
-function carregarGeradoresPlaca() {
+function loadSignGenerators() {
   try {
     const saved = JSON.parse(localStorage.getItem("ackermann.signGenerators") || "[]");
     if (Array.isArray(saved)) {
-      estado.signGenerators = saved
-        .filter((g) => Number.isFinite(g.x) && Number.isFinite(g.y) && TIPOS_PLACA[g.type])
+      state.signGenerators = saved
+        .filter((g) => Number.isFinite(g.x) && Number.isFinite(g.y) && SIGN_TYPES[g.type])
         .map((g) => ({
-          id: Number(g.id) || estado.nextSignId++,
+          id: Number(g.id) || state.nextSignId++,
           x: Number(g.x),
           y: Number(g.y),
-          allowed: Array.isArray(g.allowed) && g.allowed.length ? g.allowed.filter((type) => TIPOS_PLACA[type]) : ["proceed_forward"],
+          allowed: Array.isArray(g.allowed) && g.allowed.length ? g.allowed.filter((type) => SIGN_TYPES[type]) : ["proceed_forward"],
           approachHeading: Number.isFinite(g.approachHeading) ? Number(g.approachHeading) : null,
-          type: TIPOS_PLACA[g.type] ? g.type : "proceed_forward"
+          type: SIGN_TYPES[g.type] ? g.type : "proceed_forward"
         }));
     }
     const nextId = Number(localStorage.getItem("ackermann.nextSignId"));
-    estado.nextSignId = Math.max(nextId || 1, ...estado.signGenerators.map((g) => g.id + 1), 1);
+    state.nextSignId = Math.max(nextId || 1, ...state.signGenerators.map((g) => g.id + 1), 1);
   } catch (error) {
-    estado.signGenerators = [];
-    registrarLog(`Nao foi possivel carregar geradores: ${error.message}`);
+    state.signGenerators = [];
+    log(`Nao foi possivel carregar geradores: ${error.message}`);
   }
 }
 
-function aplicarCenarioDaUrl() {
-  const parametros = new URLSearchParams(window.location.search);
-  const scenario = parametros.get("scenario");
+function applyScenarioFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const scenario = params.get("scenario");
   if (!scenario) return;
-  estado.signGenerators = [];
-  estado.nextSignId = 1;
+  state.signGenerators = [];
+  state.nextSignId = 1;
   if (scenario === "left-sign") {
-    estado.signGenerators.push({ id: estado.nextSignId++, x: 20, y: 780, type: "stop", allowed: ["stop"], approachHeading: -Math.PI / 2 });
+    state.signGenerators.push({ id: state.nextSignId++, x: 20, y: 780, type: "stop", allowed: ["stop"], approachHeading: -Math.PI / 2 });
   } else if (scenario === "far-stop") {
-    estado.signGenerators.push({ id: estado.nextSignId++, x: 115, y: 610, type: "stop", allowed: ["stop"], approachHeading: -Math.PI / 2 });
+    state.signGenerators.push({ id: state.nextSignId++, x: 115, y: 610, type: "stop", allowed: ["stop"], approachHeading: -Math.PI / 2 });
   } else if (scenario === "right-stop") {
-    estado.signGenerators.push({ id: estado.nextSignId++, x: 125, y: 820, type: "stop", allowed: ["stop"], approachHeading: -Math.PI / 2 });
+    state.signGenerators.push({ id: state.nextSignId++, x: 125, y: 820, type: "stop", allowed: ["stop"], approachHeading: -Math.PI / 2 });
   } else if (scenario === "right-left-turn") {
-    estado.signGenerators.push({ id: estado.nextSignId++, x: 125, y: 820, type: "proceed_left", allowed: ["proceed_left"], approachHeading: -Math.PI / 2 });
+    state.signGenerators.push({ id: state.nextSignId++, x: 125, y: 820, type: "proceed_left", allowed: ["proceed_left"], approachHeading: -Math.PI / 2 });
   } else if (scenario === "city-left-sign") {
-    interfaceUsuario.trackMode.value = "city";
-    estado.signGenerators.push({ id: estado.nextSignId++, x: 398, y: 965, type: "stop", allowed: ["stop"], approachHeading: -Math.PI / 2 });
+    ui.trackMode.value = "city";
+    state.signGenerators.push({ id: state.nextSignId++, x: 398, y: 965, type: "stop", allowed: ["stop"], approachHeading: -Math.PI / 2 });
   } else if (scenario === "city-far-stop") {
-    interfaceUsuario.trackMode.value = "city";
-    estado.signGenerators.push({ id: estado.nextSignId++, x: 505, y: 770, type: "stop", allowed: ["stop"], approachHeading: -Math.PI / 2 });
+    ui.trackMode.value = "city";
+    state.signGenerators.push({ id: state.nextSignId++, x: 505, y: 770, type: "stop", allowed: ["stop"], approachHeading: -Math.PI / 2 });
   } else if (scenario === "city-right-stop") {
-    interfaceUsuario.trackMode.value = "city";
-    estado.signGenerators.push({ id: estado.nextSignId++, x: 505, y: 965, type: "stop", allowed: ["stop"], approachHeading: -Math.PI / 2 });
+    ui.trackMode.value = "city";
+    state.signGenerators.push({ id: state.nextSignId++, x: 505, y: 965, type: "stop", allowed: ["stop"], approachHeading: -Math.PI / 2 });
   } else if (scenario === "city-left-turn") {
-    interfaceUsuario.trackMode.value = "city";
-    estado.signGenerators.push({ id: estado.nextSignId++, x: 505, y: 870, type: "proceed_left", allowed: ["proceed_left"], approachHeading: -Math.PI / 2 });
+    ui.trackMode.value = "city";
+    state.signGenerators.push({ id: state.nextSignId++, x: 505, y: 870, type: "proceed_left", allowed: ["proceed_left"], approachHeading: -Math.PI / 2 });
   } else if (scenario === "city-right-turn") {
-    interfaceUsuario.trackMode.value = "city";
-    estado.signGenerators.push({ id: estado.nextSignId++, x: 505, y: 870, type: "proceed_right", allowed: ["proceed_right"], approachHeading: -Math.PI / 2 });
+    ui.trackMode.value = "city";
+    state.signGenerators.push({ id: state.nextSignId++, x: 505, y: 870, type: "proceed_right", allowed: ["proceed_right"], approachHeading: -Math.PI / 2 });
   } else if (scenario === "city-reverse-wrong-sign") {
-    interfaceUsuario.trackMode.value = "city";
-    interfaceUsuario.directionMode.value = "reverse";
-    estado.signGenerators.push({ id: estado.nextSignId++, x: 360, y: 320, type: "proceed_left", allowed: ["proceed_left"], approachHeading: -Math.PI / 2 });
+    ui.trackMode.value = "city";
+    ui.directionMode.value = "reverse";
+    state.signGenerators.push({ id: state.nextSignId++, x: 360, y: 320, type: "proceed_left", allowed: ["proceed_left"], approachHeading: -Math.PI / 2 });
   } else if (scenario === "city-reverse-right-stop") {
-    interfaceUsuario.trackMode.value = "city";
-    interfaceUsuario.directionMode.value = "reverse";
-    estado.signGenerators.push({ id: estado.nextSignId++, x: 360, y: 320, type: "stop", allowed: ["stop"], approachHeading: Math.PI / 2 });
+    ui.trackMode.value = "city";
+    ui.directionMode.value = "reverse";
+    state.signGenerators.push({ id: state.nextSignId++, x: 360, y: 320, type: "stop", allowed: ["stop"], approachHeading: Math.PI / 2 });
   }
-  atualizarListaPlacas();
-  registrarLog(`Cenario carregado: ${scenario}`);
+  updateSignList();
+  log(`Cenario carregado: ${scenario}`);
 }
 
-function atualizarLeituraPlaca() {
-  const sign = estado.activeSign;
-  if (!interfaceUsuario.signReadout) return;
-  const maneuver = entradaManobraAtual();
+function updateSignReadout() {
+  const sign = state.activeSign;
+  if (!ui.signReadout) return;
+  const maneuver = currentManeuverInput();
   if (maneuver?.stop) {
-    interfaceUsuario.signReadout.textContent = [
+    ui.signReadout.textContent = [
       "STOP em execução",
       `tempo restante: ${maneuver.remaining}s`,
       "placa já marcada como atendida"
@@ -1260,7 +1252,7 @@ function atualizarLeituraPlaca() {
   }
   if (maneuver?.active) {
     if (maneuver.type === "lane_settle") {
-      interfaceUsuario.signReadout.textContent = [
+      ui.signReadout.textContent = [
         "estabilizando saida da conversao",
         `rumo alvo: ${maneuver.targetHeadingDeg}°`,
         `volante: ${maneuver.steerBias.toFixed(2)}`,
@@ -1268,8 +1260,8 @@ function atualizarLeituraPlaca() {
       ].join("\n");
       return;
     }
-    interfaceUsuario.signReadout.textContent = [
-      `${TIPOS_PLACA[maneuver.type]?.label || maneuver.type}`,
+    ui.signReadout.textContent = [
+      `${SIGN_TYPES[maneuver.type]?.label || maneuver.type}`,
       "manobra em execução",
       `volante: ${maneuver.steerBias.toFixed(2)}`,
       `tempo restante: ${maneuver.remaining}s`
@@ -1277,38 +1269,38 @@ function atualizarLeituraPlaca() {
     return;
   }
   if (!sign) {
-    if (estado.lastInput?.wrongLaneFault) {
-      interfaceUsuario.signReadout.textContent = [
+    if (state.lastInput?.wrongLaneFault) {
+      ui.signReadout.textContent = [
         "corrigindo faixa direita",
         "tracejada apareceu à direita da câmera",
-        `dash: ${estado.lastInput.wrongLaneFault.dash}px`,
+        `dash: ${state.lastInput.wrongLaneFault.dash}px`,
         "voltando para a faixa correta"
       ].join("\n");
       return;
     }
-    if (estado.lastInput?.laneSafetyFault) {
-      interfaceUsuario.signReadout.textContent = [
+    if (state.lastInput?.laneSafetyFault) {
+      ui.signReadout.textContent = [
       "corrigindo faixa direita",
       "perto demais da tracejada/contramão",
-      `erro: ${estado.lastInput.laneSafetyFault.error}px`,
+      `erro: ${state.lastInput.laneSafetyFault.error}px`,
       "recuperando para a direita"
       ].join("\n");
       return;
     }
-    if (estado.lastInput?.crossBarrierAhead) {
-      interfaceUsuario.signReadout.textContent = [
+    if (state.lastInput?.crossBarrierAhead) {
+      ui.signReadout.textContent = [
         "aguardando placa",
         "linha continua/bloqueio detectado",
-        `distancia: ${estado.lastInput.crossBarrierAhead.distance}px`,
+        `distancia: ${state.lastInput.crossBarrierAhead.distance}px`,
         "sem decisao valida: carro parado"
       ].join("\n");
       return;
     }
-    interfaceUsuario.signReadout.textContent = "nenhuma placa no campo de visão";
+    ui.signReadout.textContent = "nenhuma placa no campo de visão";
     return;
   }
-  const def = TIPOS_PLACA[sign.type];
-  interfaceUsuario.signReadout.textContent = [
+  const def = SIGN_TYPES[sign.type];
+  ui.signReadout.textContent = [
     `${def.label}`,
     `decisão: ${def.decision}`,
     `distância frontal: ${sign.forward.toFixed(1)} px`,
@@ -1317,27 +1309,27 @@ function atualizarLeituraPlaca() {
   ].join("\n");
 }
 
-function renderizarPlacasNaPista() {
-  for (const generator of estado.signGenerators) {
-    ctxSimulacao.save();
-    ctxSimulacao.globalAlpha = 0.95;
-    ctxSimulacao.strokeStyle = "#f2c230";
-    ctxSimulacao.lineWidth = 1;
-    ctxSimulacao.setLineDash([4, 4]);
-    ctxSimulacao.beginPath();
-    ctxSimulacao.arc(generator.x, generator.y, 22, 0, Math.PI * 2);
-    ctxSimulacao.stroke();
-    ctxSimulacao.setLineDash([]);
-    desenharSimboloPlaca(ctxSimulacao, generator.type, generator.x, generator.y, 28, 0);
-    ctxSimulacao.fillStyle = "#f2f4f5";
-    ctxSimulacao.font = "700 11px ui-sans-serif, system-ui";
-    ctxSimulacao.fillText(`#${generator.id}`, generator.x + 18, generator.y - 18);
-    ctxSimulacao.restore();
+function renderSignsOnTrack() {
+  for (const generator of state.signGenerators) {
+    ctx.save();
+    ctx.globalAlpha = 0.95;
+    ctx.strokeStyle = "#f2c230";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.arc(generator.x, generator.y, 22, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    drawSignSymbol(ctx, generator.type, generator.x, generator.y, 28, 0);
+    ctx.fillStyle = "#f2f4f5";
+    ctx.font = "700 11px ui-sans-serif, system-ui";
+    ctx.fillText(`#${generator.id}`, generator.x + 18, generator.y - 18);
+    ctx.restore();
   }
 }
 
-function desenharSimboloPlaca(targetCtx, type, x, y, size, rotation) {
-  const def = TIPOS_PLACA[type] || TIPOS_PLACA.proceed_forward;
+function drawSignSymbol(targetCtx, type, x, y, size, rotation) {
+  const def = SIGN_TYPES[type] || SIGN_TYPES.proceed_forward;
   targetCtx.save();
   targetCtx.translate(x, y);
   targetCtx.rotate(rotation);
@@ -1345,7 +1337,7 @@ function desenharSimboloPlaca(targetCtx, type, x, y, size, rotation) {
   targetCtx.textAlign = "center";
   targetCtx.textBaseline = "middle";
   if (type === "stop") {
-    poligono(targetCtx, 8, size * 0.58);
+    polygon(targetCtx, 8, size * 0.58);
     targetCtx.fillStyle = "#ee584f";
     targetCtx.fill();
     targetCtx.strokeStyle = "#ffffff";
@@ -1378,7 +1370,7 @@ function desenharSimboloPlaca(targetCtx, type, x, y, size, rotation) {
   targetCtx.restore();
 }
 
-function poligono(targetCtx, sides, radius) {
+function polygon(targetCtx, sides, radius) {
   targetCtx.beginPath();
   for (let i = 0; i < sides; i += 1) {
     const a = -Math.PI / 2 + i * Math.PI * 2 / sides;
@@ -1390,14 +1382,14 @@ function poligono(targetCtx, sides, radius) {
   targetCtx.closePath();
 }
 
-function pareceCodigoRoboPython(source) {
+function looksLikePythonRobotCode(source) {
   return /\bimport\s+(cv2|RPi|numpy|sys|time)\b/.test(source)
     || /\bclass\s+AutonomousCar\b/.test(source)
     || /\bGPIO\./.test(source)
     || /\bdef\s+detect_lanes\b/.test(source);
 }
 
-function aplicarPerfilRoboPython(source) {
+function applyPythonRobotProfile(source) {
   const getNumber = (name, fallback) => {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const match = source.match(new RegExp(`^\\s*${escaped}\\s*=\\s*(-?\\d+(?:\\.\\d+)?)`, "m"));
@@ -1408,31 +1400,31 @@ function aplicarPerfilRoboPython(source) {
   const servoMin = getNumber("SERVO_MIN_REAL", -0.5);
   const servoMax = getNumber("SERVO_MAX_REAL", 1.0);
   const servoCenter = getNumber("SERVO_CENTRO", 0.25);
-  limiarBranco = getNumber("LINHA_BRANCA_THRESH", getNumber("white_threshold", 185));
+  whiteThreshold = getNumber("LINHA_BRANCA_THRESH", getNumber("white_threshold", 185));
 
   const kp = getNumber("self.KP", getNumber("KP", null));
   const ki = getNumber("self.KI", getNumber("KI", null));
   const kd = getNumber("self.KD", getNumber("KD", null));
-  if (kp !== null) interfaceUsuario.kp.value = limitar(kp, Number(interfaceUsuario.kp.min), Number(interfaceUsuario.kp.max));
-  if (ki !== null) interfaceUsuario.ki.value = limitar(ki, Number(interfaceUsuario.ki.min), Number(interfaceUsuario.ki.max));
-  if (kd !== null) interfaceUsuario.kd.value = limitar(kd, Number(interfaceUsuario.kd.min), Number(interfaceUsuario.kd.max));
+  if (kp !== null) ui.kp.value = clamp(kp, Number(ui.kp.min), Number(ui.kp.max));
+  if (ki !== null) ui.ki.value = clamp(ki, Number(ui.ki.min), Number(ui.ki.max));
+  if (kd !== null) ui.kd.value = clamp(kd, Number(ui.kd.min), Number(ui.kd.max));
 
-  interfaceUsuario.speed.value = limitar((velBase / 100) * 1.2, Number(interfaceUsuario.speed.min), Number(interfaceUsuario.speed.max)).toFixed(2);
-  interfaceUsuario.pwmMin.value = Math.round(1500 + servoMin * 500);
-  interfaceUsuario.pwmCenter.value = Math.round(1500 + servoCenter * 500);
-  interfaceUsuario.pwmMax.value = Math.round(1500 + servoMax * 500);
-  interfaceUsuario.controllerMode.value = "rightLine";
-  controladorPersonalizado = null;
-  sincronizarSaidasSliders();
-  resetarCarro();
-  interfaceUsuario.codeStatus.textContent = [
+  ui.speed.value = clamp((velBase / 100) * 1.2, Number(ui.speed.min), Number(ui.speed.max)).toFixed(2);
+  ui.pwmMin.value = Math.round(1500 + servoMin * 500);
+  ui.pwmCenter.value = Math.round(1500 + servoCenter * 500);
+  ui.pwmMax.value = Math.round(1500 + servoMax * 500);
+  ui.controllerMode.value = "rightLine";
+  customController = null;
+  syncRangeOutputs();
+  resetCar();
+  ui.codeStatus.textContent = [
     "Python/RPi importado como perfil de simulação.",
     `threshold=${whiteThreshold}, VEL_BASE=${velBase}, servo=[${servoMin}, ${servoCenter}, ${servoMax}]`
   ].join(" ");
-  registrarLog("Perfil Python/RPi importado");
+  log("Perfil Python/RPi importado");
 }
 
-function vincularSliders() {
+function bindRanges() {
   const pairs = [
     ["wheelbase", "wheelbaseOut", (v) => `${Number(v).toFixed(2)} m`],
     ["maxSteer", "maxSteerOut", (v) => `${v}°`],
@@ -1445,14 +1437,14 @@ function vincularSliders() {
     ["envNoise", "envNoiseOut", (v) => Number(v).toFixed(0)],
     ["envShadow", "envShadowOut", (v) => Number(v).toFixed(2)]
   ];
-  for (const [input, output, formatarValor] of pairs) {
-    const sync = () => { interfaceUsuario[output].textContent = formatarValor(interfaceUsuario[input].value); };
-    interfaceUsuario[input].addEventListener("input", sync);
+  for (const [input, output, fmt] of pairs) {
+    const sync = () => { ui[output].textContent = fmt(ui[input].value); };
+    ui[input].addEventListener("input", sync);
   }
-  sincronizarSaidasSliders();
+  syncRangeOutputs();
 }
 
-function sincronizarSaidasSliders() {
+function syncRangeOutputs() {
   const pairs = [
     ["wheelbase", "wheelbaseOut", (v) => `${Number(v).toFixed(2)} m`],
     ["maxSteer", "maxSteerOut", (v) => `${v}°`],
@@ -1465,12 +1457,12 @@ function sincronizarSaidasSliders() {
     ["envNoise", "envNoiseOut", (v) => Number(v).toFixed(0)],
     ["envShadow", "envShadowOut", (v) => Number(v).toFixed(2)]
   ];
-  for (const [input, output, formatarValor] of pairs) {
-    interfaceUsuario[output].textContent = formatarValor(interfaceUsuario[input].value);
+  for (const [input, output, fmt] of pairs) {
+    ui[output].textContent = fmt(ui[input].value);
   }
 }
 
-function aplicarPredefinicaoAmbiente() {
+function applyEnvironmentPreset() {
   const presets = {
     clean: { light: 1, contrast: 1, noise: 0, shadow: 0 },
     sun: { light: 1.28, contrast: 1.28, noise: 8, shadow: 0.22 },
@@ -1478,30 +1470,30 @@ function aplicarPredefinicaoAmbiente() {
     dark: { light: 0.48, contrast: 0.82, noise: 24, shadow: 0.35 },
     noisy: { light: 0.88, contrast: 1.05, noise: 52, shadow: 0.18 }
   };
-  const preset = presets[interfaceUsuario.environmentPreset.value] || presets.clean;
-  interfaceUsuario.envLight.value = preset.light;
-  interfaceUsuario.envContrast.value = preset.contrast;
-  interfaceUsuario.envNoise.value = preset.noise;
-  interfaceUsuario.envShadow.value = preset.shadow;
-  sincronizarSaidasSliders();
-  registrarLog(`Ambiente: ${ui.environmentPreset.options[ui.environmentPreset.selectedIndex].text}`);
+  const preset = presets[ui.environmentPreset.value] || presets.clean;
+  ui.envLight.value = preset.light;
+  ui.envContrast.value = preset.contrast;
+  ui.envNoise.value = preset.noise;
+  ui.envShadow.value = preset.shadow;
+  syncRangeOutputs();
+  log(`Ambiente: ${ui.environmentPreset.options[ui.environmentPreset.selectedIndex].text}`);
 }
 
-interfaceUsuario.runBtn.addEventListener("click", () => { estado.running = true; registrarLog("Simulação rodando"); });
-interfaceUsuario.pauseBtn.addEventListener("click", () => { estado.running = false; registrarLog("Simulação pausada"); });
-interfaceUsuario.resetBtn.addEventListener("click", resetarCarro);
-interfaceUsuario.trackMode.addEventListener("change", resetarCarro);
-interfaceUsuario.directionMode.addEventListener("change", resetarCarro);
-interfaceUsuario.environmentPreset.addEventListener("change", aplicarPredefinicaoAmbiente);
-interfaceUsuario.randomizeSignsBtn.addEventListener("click", sortearPlacas);
-interfaceUsuario.clearSignsBtn.addEventListener("click", limparPlacas);
-interfaceUsuario.applyCodeBtn.addEventListener("click", compilarCodigoPersonalizado);
-interfaceUsuario.restoreCodeBtn.addEventListener("click", () => {
-  interfaceUsuario.codeEditor.value = CODIGO_CONTROLADOR_PADRAO;
-  controladorPersonalizado = null;
-  interfaceUsuario.controllerMode.value = "rightLine";
-  resetarCarro();
-  interfaceUsuario.codeStatus.textContent = "Controlador padrão restaurado.";
+ui.runBtn.addEventListener("click", () => { state.running = true; log("Simulação rodando"); });
+ui.pauseBtn.addEventListener("click", () => { state.running = false; log("Simulação pausada"); });
+ui.resetBtn.addEventListener("click", resetCar);
+ui.trackMode.addEventListener("change", resetCar);
+ui.directionMode.addEventListener("change", resetCar);
+ui.environmentPreset.addEventListener("change", applyEnvironmentPreset);
+ui.randomizeSignsBtn.addEventListener("click", randomizeSigns);
+ui.clearSignsBtn.addEventListener("click", clearSigns);
+ui.applyCodeBtn.addEventListener("click", compileCustomCode);
+ui.restoreCodeBtn.addEventListener("click", () => {
+  ui.codeEditor.value = DEFAULT_CONTROLLER_CODE;
+  customController = null;
+  ui.controllerMode.value = "rightLine";
+  resetCar();
+  ui.codeStatus.textContent = "Controlador padrão restaurado.";
 });
 
 document.querySelectorAll(".navItem").forEach((button) => {
@@ -1513,80 +1505,80 @@ document.querySelectorAll(".navItem").forEach((button) => {
     });
   });
 });
-interfaceUsuario.trackInput.addEventListener("change", (ev) => {
+ui.trackInput.addEventListener("change", (ev) => {
   const file = ev.target.files?.[0];
   if (!file) return;
   const img = new Image();
   img.onload = () => {
-    ctxPista.fillStyle = "#202421";
-    ctxPista.fillRect(0, 0, telaPista.width, telaPista.height);
-    const scale = Math.min(telaPista.width / img.width, telaPista.height / img.height);
+    trackCtx.fillStyle = "#202421";
+    trackCtx.fillRect(0, 0, trackCanvas.width, trackCanvas.height);
+    const scale = Math.min(trackCanvas.width / img.width, trackCanvas.height / img.height);
     const iw = img.width * scale;
     const ih = img.height * scale;
-    ctxPista.drawImage(img, (telaPista.width - iw) / 2, (telaPista.height - ih) / 2, iw, ih);
-    atualizarPixelsPista();
-    interfaceUsuario.trackName.textContent = file.name;
-    resetarCarro();
-    registrarLog(`Imagem carregada: ${file.name}`);
+    trackCtx.drawImage(img, (trackCanvas.width - iw) / 2, (trackCanvas.height - ih) / 2, iw, ih);
+    refreshTrackPixels();
+    ui.trackName.textContent = file.name;
+    resetCar();
+    log(`Imagem carregada: ${file.name}`);
   };
   img.src = URL.createObjectURL(file);
 });
 
-telaSimulacao.addEventListener("click", (ev) => {
-  const rect = telaSimulacao.getBoundingClientRect();
-  const x = (ev.clientX - rect.left) * (telaSimulacao.width / rect.width);
-  const y = (ev.clientY - rect.top) * (telaSimulacao.height / rect.height);
-  if (interfaceUsuario.signEditMode.checked) {
-    adicionarGeradorPlaca(x, y);
+canvas.addEventListener("click", (ev) => {
+  const rect = canvas.getBoundingClientRect();
+  const x = (ev.clientX - rect.left) * (canvas.width / rect.width);
+  const y = (ev.clientY - rect.top) * (canvas.height / rect.height);
+  if (ui.signEditMode.checked) {
+    addSignGenerator(x, y);
     return;
   }
-  estado.car.x = x;
-  estado.car.y = y;
-  estado.path = [];
-  registrarLog(`Carro reposicionado: ${estado.car.x.toFixed(0)}, ${estado.car.y.toFixed(0)}`);
+  state.car.x = x;
+  state.car.y = y;
+  state.path = [];
+  log(`Carro reposicionado: ${state.car.x.toFixed(0)}, ${state.car.y.toFixed(0)}`);
 });
 
 window.addEventListener("keydown", (ev) => {
-  if (ev.key.toLowerCase() === "a") estado.car.heading -= 0.08;
-  if (ev.key.toLowerCase() === "d") estado.car.heading += 0.08;
+  if (ev.key.toLowerCase() === "a") state.car.heading -= 0.08;
+  if (ev.key.toLowerCase() === "d") state.car.heading += 0.08;
 });
 
 window.__simDebug = {
   getState: () => JSON.parse(document.body.dataset.simState || "{}"),
-  getInput: () => JSON.parse(JSON.stringify(estado.lastInput)),
-  getCar: () => JSON.parse(JSON.stringify(estado.car)),
+  getInput: () => JSON.parse(JSON.stringify(state.lastInput)),
+  getCar: () => JSON.parse(JSON.stringify(state.car)),
   snapshot: () => JSON.parse(JSON.stringify({
-    time: estado.time,
-    running: estado.running,
-    car: estado.car,
-    speed: estado.currentSpeed,
-    activeSign: estado.activeSign,
-    maneuver: entradaManobraAtual(),
-    headingHold: estado.headingHold,
-    lastInput: estado.lastInput,
-    handledSigns: [...estado.handledSigns],
-    signs: estado.signGenerators
+    time: state.time,
+    running: state.running,
+    car: state.car,
+    speed: state.currentSpeed,
+    activeSign: state.activeSign,
+    maneuver: currentManeuverInput(),
+    headingHold: state.headingHold,
+    lastInput: state.lastInput,
+    handledSigns: [...state.handledSigns],
+    signs: state.signGenerators
   })),
-  run: () => { estado.running = true; },
-  pause: () => { estado.running = false; },
-  reset: () => resetarCarro(),
-  limparPlacas: () => limparPlacas(),
-  addSign: (x, y, type = "stop", allowed = [type], approachHeading = estado.car.heading) => {
-    estado.signGenerators.push({ id: estado.nextSignId++, x, y, type, allowed, approachHeading });
-    salvarGeradoresPlaca();
-    atualizarListaPlacas();
+  run: () => { state.running = true; },
+  pause: () => { state.running = false; },
+  reset: () => resetCar(),
+  clearSigns: () => clearSigns(),
+  addSign: (x, y, type = "stop", allowed = [type], approachHeading = state.car.heading) => {
+    state.signGenerators.push({ id: state.nextSignId++, x, y, type, allowed, approachHeading });
+    saveSignGenerators();
+    updateSignList();
   },
   setEnvironment: (preset) => {
-    interfaceUsuario.environmentPreset.value = preset;
-    aplicarPredefinicaoAmbiente();
+    ui.environmentPreset.value = preset;
+    applyEnvironmentPreset();
   }
 };
 
-interfaceUsuario.codeEditor.value = CODIGO_CONTROLADOR_PADRAO;
-interfaceUsuario.controllerMode.value = "rightLine";
-carregarGeradoresPlaca();
-aplicarCenarioDaUrl();
-carregarPistaOficial();
-vincularSliders();
-atualizarListaPlacas();
-requestAnimationFrame(quadro);
+ui.codeEditor.value = DEFAULT_CONTROLLER_CODE;
+ui.controllerMode.value = "rightLine";
+loadSignGenerators();
+applyScenarioFromUrl();
+loadOfficialTrack();
+bindRanges();
+updateSignList();
+requestAnimationFrame(frame);

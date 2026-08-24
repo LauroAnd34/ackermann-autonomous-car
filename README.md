@@ -7,17 +7,6 @@ Simulador e codigo Raspberry Pi para um carrinho autonomo com direcao Ackermann,
 - `ackermann-track-sim-web/`: simulador web em HTML/CSS/JS.
 - `ackermann_robot_right_lane_controller.py`: codigo para Raspberry Pi com camera USB, GPIO, motores e servo.
 
-## Padrao de software usado
-
-O projeto foi organizado em portugues e com separacao de responsabilidades:
-
-- **Modelo**: guarda estado do carro, placas, pista, telemetria e leituras de camera.
-- **Visao**: desenha a pista, a camera virtual, o processamento e os paineis do simulador.
-- **Controle / Strategy**: recebe leituras de faixa/placa e devolve direcao Ackermann + velocidade.
-- **Adaptadores de hardware**: no Raspberry Pi, GPIO, motores, servo e camera ficam isolados das regras de controle.
-
-No simulador, o contrato do editor de codigo continua em ingles (`input.rightLineOffsetPx`, `input.sign`, `api.clamp`, `steer`, `speed`) para nao quebrar codigos ja colados/testados. O restante do codigo proprio foi traduzido para portugues sempre que isso nao afetava APIs externas do navegador, OpenCV, GPIO ou argparse.
-
 ## Rodar o simulador
 
 ```bash
