@@ -866,18 +866,18 @@ function renderizarProcessamento() {
     desenharPontoProcessamento(input.leftLineOffsetPx, 142, "#ee584f");
     desenharPontoProcessamento(input.centerDashedOffsetPx, 90, "#f2c230");
     interfaceUsuario.visionReadout.textContent = [
-      `right: ${fmt(input.rightLineOffsetPx)} px (${input.rightLineSamples} amostras)`,
-      `left : ${fmt(input.leftLineOffsetPx)} px (${input.leftLineSamples} amostras)`,
-      `dash : ${fmt(input.centerDashedOffsetPx)} px (${input.dashedSamples} amostras)`,
-      `target faixa dir.: ${fmt(input.laneCenterTargetPx ?? 42)} px`,
+      `right: ${formatarValor(input.rightLineOffsetPx)} px (${input.rightLineSamples} amostras)`,
+      `left : ${formatarValor(input.leftLineOffsetPx)} px (${input.leftLineSamples} amostras)`,
+      `dash : ${formatarValor(input.centerDashedOffsetPx)} px (${input.dashedSamples} amostras)`,
+      `target faixa dir.: ${formatarValor(input.laneCenterTargetPx ?? 42)} px`,
       `bloqueio: ${input.crossBarrierAhead ? `${input.crossBarrierAhead.distance}px largura ${input.crossBarrierAhead.width}` : "none"}`,
       `contramao: ${input.wrongLaneFault ? `tracejada à direita ${input.wrongLaneFault.dash}px` : "ok"}`,
       `segurança: ${input.laneSafetyFault ? `fora da faixa erro ${input.laneSafetyFault.error}` : "ok"}`,
       `slope: ${input.rightLineSlope.toFixed(2)}  conf: ${input.confidence.toFixed(2)}`,
-      `thresh: ${whiteThreshold}`
+      `thresh: ${limiarBranco}`
     ].join("\n");
   } else {
-    interfaceUsuario.visionReadout.textContent = `aguardando frame\nthresh: ${whiteThreshold}`;
+    interfaceUsuario.visionReadout.textContent = `aguardando frame\nthresh: ${limiarBranco}`;
   }
 }
 
@@ -1427,7 +1427,7 @@ function aplicarPerfilRoboPython(source) {
   resetarCarro();
   interfaceUsuario.codeStatus.textContent = [
     "Python/RPi importado como perfil de simulação.",
-    `threshold=${whiteThreshold}, VEL_BASE=${velBase}, servo=[${servoMin}, ${servoCenter}, ${servoMax}]`
+    `threshold=${limiarBranco}, VEL_BASE=${velBase}, servo=[${servoMin}, ${servoCenter}, ${servoMax}]`
   ].join(" ");
   registrarLog("Perfil Python/RPi importado");
 }
@@ -1484,7 +1484,7 @@ function aplicarPredefinicaoAmbiente() {
   interfaceUsuario.envNoise.value = preset.noise;
   interfaceUsuario.envShadow.value = preset.shadow;
   sincronizarSaidasSliders();
-  registrarLog(`Ambiente: ${ui.environmentPreset.options[ui.environmentPreset.selectedIndex].text}`);
+  registrarLog(`Ambiente: ${interfaceUsuario.environmentPreset.options[interfaceUsuario.environmentPreset.selectedIndex].text}`);
 }
 
 interfaceUsuario.runBtn.addEventListener("click", () => { estado.running = true; registrarLog("Simulação rodando"); });
